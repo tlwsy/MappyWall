@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "mappywall",
+  "version": "${version}",
+  "name": "MappyWall",
+  "description": "Client-only helpers for planning and opening large Minecraft map walls.",
+  "authors": [
+    "MappyWall contributors"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/mappywall/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.mappywall.client.MappyWallClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "26.1.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
+

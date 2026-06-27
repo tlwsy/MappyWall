@@ -1,0 +1,93 @@
+plugins {
+    id "java"
+    id "maven-publish"
+    id "fabric-loom" version "1.17.12" apply false
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+def fabricEnabled = providers.gradleProperty("enableFabric")
+        .map { it.toBoolean() }
+        .orElse(false)
+        .get()
+
+if (fabricEnabled) {
+    apply plugin: "fabric-loom"
+
+    loom {
+        splitEnvironmentSourceSets()
+
+        mods {
+            mappywall {
+                sourceSet sourceSets.main
+                sourceSet sourceSets.client
+            }
+        }
+    }
+}
+
+repositories {
+    maven {
+        name = "Fabric"
+        url = "https://maven.fabricmc.net/"
+    }
+    mavenCentral()
+}
+
+dependencies {
+    implementation "com.google.code.gson:gson:2.13.2"
+    testImplementation platform("org.junit:junit-bom:5.14.0")
+    testImplementation "org.junit.jupiter:junit-jupiter"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+
+    if (fabricEnabled) {
+        minecraft "com.mojang:minecraft:${project.minecraft_version}"
+        mappings loom.officialMojangMappings()
+        modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+        modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    }
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "fabricEnabled", fabricEnabled
+
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+
+    if (!fabricEnabled) {
+        exclude("fabric.mod.json")
+    }
+}
+
+tasks.register("printFabricStatus") {
+    group = "help"
+    description = "Explains how to enable Fabric/Loom compilation once mappings are available."
+    doLast {
+        println("Core build is active. Fabric client compilation is gated by -PenableFabric=true because 26.1.2 mappings are not currently published.")
+        println("Run: gradle -PenableFabric=true build")
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.release = project.java_version as int
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(project.java_version as int)
+    }
+
+    withSourcesJar()
+}
+
+test {
+    useJUnitPlatform()
+}

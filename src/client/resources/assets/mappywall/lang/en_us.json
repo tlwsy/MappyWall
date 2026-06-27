@@ -1,0 +1,24 @@
+{
+  "key.category.mappywall.controls": "MappyWall",
+  "key.mappywall.open_config": "Open MappyWall setup",
+  "key.mappywall.pause_resume": "Pause/resume MappyWall run",
+  "screen.mappywall.config.title": "MappyWall Setup",
+  "screen.mappywall.scale": "Scale",
+  "screen.mappywall.width": "Wall width",
+  "screen.mappywall.height": "Wall height",
+  "screen.mappywall.mode": "Mode",
+  "screen.mappywall.start": "Start manual run",
+  "screen.mappywall.close": "Close",
+  "screen.mappywall.auto_locked": "Automatic modes are planned after the manual MVP.",
+  "hud.mappywall.paused": "Paused",
+  "hud.mappywall.complete": "Map wall complete",
+  "hud.mappywall.empty_maps": "Empty maps",
+  "hud.mappywall.target": "Target",
+  "hud.mappywall.progress": "Progress",
+  "message.mappywall.started": "MappyWall manual run started.",
+  "message.mappywall.paused": "MappyWall run paused.",
+  "message.mappywall.resumed": "MappyWall run resumed.",
+  "message.mappywall.no_project": "No active MappyWall project.",
+  "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."
+}
+

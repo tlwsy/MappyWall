@@ -1,0 +1,24 @@
+{
+  "key.category.mappywall.controls": "MappyWall",
+  "key.mappywall.open_config": "打开 MappyWall 设置",
+  "key.mappywall.pause_resume": "暂停/继续 MappyWall 跑图",
+  "screen.mappywall.config.title": "MappyWall 设置",
+  "screen.mappywall.scale": "地图比例尺",
+  "screen.mappywall.width": "地图墙宽度",
+  "screen.mappywall.height": "地图墙高度",
+  "screen.mappywall.mode": "跑图模式",
+  "screen.mappywall.start": "开始手动跑图",
+  "screen.mappywall.close": "关闭",
+  "screen.mappywall.auto_locked": "自动跑图模式将在手动 MVP 之后实现。",
+  "hud.mappywall.paused": "已暂停",
+  "hud.mappywall.complete": "地图墙已完成",
+  "hud.mappywall.empty_maps": "空地图",
+  "hud.mappywall.target": "目标",
+  "hud.mappywall.progress": "进度",
+  "message.mappywall.started": "MappyWall 手动跑图已开始。",
+  "message.mappywall.paused": "MappyWall 跑图已暂停。",
+  "message.mappywall.resumed": "MappyWall 跑图已继续。",
+  "message.mappywall.no_project": "没有正在进行的 MappyWall 项目。",
+  "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"
+}
+
