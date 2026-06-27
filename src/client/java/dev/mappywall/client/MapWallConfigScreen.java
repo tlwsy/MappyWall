@@ -26,7 +26,7 @@ public final class MapWallConfigScreen extends Screen {
     @Override
     protected void init() {
         int left = this.width / 2 - 100;
-        int y = this.height / 2 - 72;
+        int y = Math.max(24, this.height / 2 - 92);
 
         addDrawableChild(ButtonWidget.builder(label("screen.mappywall.scale", scale), button -> {
             scale = (scale + 1) % 5;
@@ -81,10 +81,14 @@ public final class MapWallConfigScreen extends Screen {
 
     @Override
     public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
-        graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, this.height / 2 - 104, 0xFFFFFFFF);
-        graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_locked"), this.width / 2, this.height / 2 + 8, 0xFFAAAAAA);
-        graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.width"), this.width / 2 - 100, this.height / 2 - 42, 0xFFFFFFFF);
-        graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.height"), this.width / 2 - 100, this.height / 2 - 18, 0xFFFFFFFF);
+        int y = Math.max(24, this.height / 2 - 92);
+        graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, y - 18, 0xFFFFFFFF);
+        graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_locked"), this.width / 2, y + 82, 0xFFAAAAAA);
+        if (this.height >= 230) {
+            graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.scale_note"), this.width / 2, y + 178, 0xFFAAAAAA);
+        }
+        graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.width"), this.width / 2 - 100, y + 30, 0xFFFFFFFF);
+        graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.height"), this.width / 2 - 100, y + 54, 0xFFFFFFFF);
         super.render(graphics, mouseX, mouseY, partialTick);
     }
 

@@ -18,6 +18,7 @@ import net.minecraft.util.Hand;
 public final class MapOpenController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
     private static final int OPEN_WAIT_TICKS = 80;
+    private static final int EMPTY_MAP_SCALE = 0;
     private final InventoryMapScanner scanner;
     private int cooldownTicks;
     private PendingOpening pendingOpening;
@@ -58,6 +59,11 @@ public final class MapOpenController {
             return Optional.empty();
         }
 
+        if (target.region().scale() != EMPTY_MAP_SCALE) {
+            cooldownTicks = 40;
+            return Optional.empty();
+        }
+
         ClientPlayerEntity player = client.player;
         if (player == null || client.interactionManager == null) {
             return Optional.empty();
@@ -86,7 +92,7 @@ public final class MapOpenController {
 
         Set<Integer> knownMapIds = currentFilledMapIds(client);
         client.interactionManager.interactItem(player, Hand.MAIN_HAND);
-        pendingOpening = new PendingOpening(target.region().signature(), knownMapIds, OPEN_WAIT_TICKS);
+        pendingOpening = new PendingOpening(target.region().signature(), knownMapIds, hotbarSlot, OPEN_WAIT_TICKS);
         cooldownTicks = 4;
         return Optional.empty();
     }
@@ -95,6 +101,11 @@ public final class MapOpenController {
         if (!pendingOpening.regionSignature().equals(target.region().signature())) {
             pendingOpening = null;
             return Optional.empty();
+        }
+
+        Integer selectedMapId = readPendingSlotMapId(client);
+        if (selectedMapId != null && !pendingOpening.knownMapIds().contains(selectedMapId)) {
+            return Optional.of(selectedMapId);
         }
 
         for (ObservedMap observed : scanner.scanFilledMaps(client)) {
@@ -129,9 +140,20 @@ public final class MapOpenController {
         );
     }
 
-    private record PendingOpening(String regionSignature, Set<Integer> knownMapIds, int ticksRemaining) {
+    private Integer readPendingSlotMapId(MinecraftClient client) {
+        if (client.player == null || pendingOpening == null) {
+            return null;
+        }
+        ItemStack stack = client.player.getInventory().getMainStacks().get(pendingOpening.hotbarSlot());
+        if (!stack.isOf(Items.FILLED_MAP)) {
+            return null;
+        }
+        return InventoryMapIds.readMapId(stack);
+    }
+
+    private record PendingOpening(String regionSignature, Set<Integer> knownMapIds, int hotbarSlot, int ticksRemaining) {
         PendingOpening tick() {
-            return new PendingOpening(regionSignature, knownMapIds, ticksRemaining - 1);
+            return new PendingOpening(regionSignature, knownMapIds, hotbarSlot, ticksRemaining - 1);
         }
     }
 }

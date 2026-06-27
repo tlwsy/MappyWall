@@ -23,49 +23,56 @@ public final class MapWallTasksScreen extends Screen {
     @Override
     protected void init() {
         reloadTasks();
-        int left = this.width / 2 - 160;
-        int y = this.height / 2 - 104;
+        int left = Math.max(8, this.width / 2 - 176);
+        int y = Math.max(24, this.height / 2 - 104);
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.new_task"), button ->
                 runtime.openNewProjectScreen(MinecraftClient.getInstance())
-        ).dimensions(left, y, 100, 20).build());
+        ).dimensions(left, y, 96, 20).build());
 
         ButtonWidget pauseButton = ButtonWidget.builder(Text.translatable("screen.mappywall.pause_resume"), button -> {
             runtime.togglePause(MinecraftClient.getInstance());
             refresh();
-        }).dimensions(left + 110, y, 100, 20).build();
+        }).dimensions(left + 104, y, 96, 20).build();
         pauseButton.active = runtime.hasActiveProject();
         addDrawableChild(pauseButton);
 
         ButtonWidget stopButton = ButtonWidget.builder(Text.translatable("screen.mappywall.stop_hide"), button -> {
             runtime.stopActiveProject(MinecraftClient.getInstance());
             refresh();
-        }).dimensions(left + 220, y, 100, 20).build();
+        }).dimensions(left + 208, y, 144, 20).build();
         stopButton.active = runtime.hasActiveProject();
         addDrawableChild(stopButton);
 
         int taskY = y + 42;
-        for (int i = 0; i < Math.min(MAX_VISIBLE_TASKS, tasks.size()); i++) {
+        int visibleTasks = visibleTaskCount(taskY);
+        for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
             MappyWallRuntime.ProjectListItem task = tasks.get(i);
             ButtonWidget activateButton = ButtonWidget.builder(Text.translatable("screen.mappywall.activate"), button -> {
                 runtime.activateProject(MinecraftClient.getInstance(), task.id());
                 refresh();
-            }).dimensions(left + 240, taskY + i * 32, 80, 20).build();
+            }).dimensions(left + 232, taskY + i * 32, 56, 20).build();
             activateButton.active = !task.active()
-                    && task.status() != ProjectStatus.COMPLETE
-                    && task.status() != ProjectStatus.STOPPED;
+                    && task.status() != ProjectStatus.COMPLETE;
             addDrawableChild(activateButton);
+
+            ButtonWidget deleteButton = ButtonWidget.builder(Text.translatable("screen.mappywall.delete"), button -> {
+                runtime.deleteProject(MinecraftClient.getInstance(), task.id());
+                refresh();
+            }).dimensions(left + 296, taskY + i * 32, 56, 20).build();
+            deleteButton.active = !task.active();
+            addDrawableChild(deleteButton);
         }
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
-                .dimensions(this.width / 2 - 100, this.height / 2 + 96, 200, 20)
+                .dimensions(this.width / 2 - 100, closeButtonY(y), 200, 20)
                 .build());
     }
 
     @Override
     public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
-        int left = this.width / 2 - 160;
-        int y = this.height / 2 - 104;
+        int left = Math.max(8, this.width / 2 - 176);
+        int y = Math.max(24, this.height / 2 - 104);
         graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, y - 24, 0xFFFFFFFF);
         graphics.drawTextWithShadow(this.textRenderer,
                 Text.translatable("screen.mappywall.tasks.count").append(": " + tasks.size()),
@@ -81,7 +88,8 @@ public final class MapWallTasksScreen extends Screen {
                     0xFFFFFFFF);
         }
 
-        for (int i = 0; i < Math.min(MAX_VISIBLE_TASKS, tasks.size()); i++) {
+        int visibleTasks = visibleTaskCount(y + 42);
+        for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
             MappyWallRuntime.ProjectListItem task = tasks.get(i);
             int rowY = y + 42 + i * 32;
             Text headline = Text.literal(shortId(task.id()) + "  "
@@ -100,11 +108,11 @@ public final class MapWallTasksScreen extends Screen {
                     0xFFFFFFFF);
         }
 
-        if (tasks.size() > MAX_VISIBLE_TASKS) {
+        if (tasks.size() > visibleTasks) {
             graphics.drawTextWithShadow(this.textRenderer,
-                    Text.translatable("screen.mappywall.tasks.more").append(": " + (tasks.size() - MAX_VISIBLE_TASKS)),
+                    Text.translatable("screen.mappywall.tasks.more").append(": " + (tasks.size() - visibleTasks)),
                     left,
-                    y + 42 + MAX_VISIBLE_TASKS * 32,
+                    y + 42 + visibleTasks * 32,
                     0xFFFFFFFF);
         }
 
@@ -118,6 +126,16 @@ public final class MapWallTasksScreen extends Screen {
 
     private void reloadTasks() {
         tasks = runtime.listProjects(MinecraftClient.getInstance());
+    }
+
+    private int visibleTaskCount(int taskY) {
+        int closeY = closeButtonY(Math.max(24, this.height / 2 - 104));
+        int availableRows = Math.max(1, (closeY - taskY - 10) / 32);
+        return Math.min(MAX_VISIBLE_TASKS, availableRows);
+    }
+
+    private int closeButtonY(int y) {
+        return Math.min(this.height - 24, Math.max(y + 92, this.height - 28));
     }
 
     private String shortId(String id) {

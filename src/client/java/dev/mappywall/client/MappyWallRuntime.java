@@ -84,6 +84,9 @@ public final class MappyWallRuntime {
         mapOpenController.reset();
         saveNow(client);
         client.player.sendMessage(Text.translatable("message.mappywall.started"), false);
+        if (scale != 0) {
+            client.player.sendMessage(Text.translatable("message.mappywall.scale_requires_existing_maps"), false);
+        }
     }
 
     public void togglePause(MinecraftClient client) {
@@ -138,7 +141,7 @@ public final class MappyWallRuntime {
         }
 
         MapWallSave save = loaded.get().save();
-        if (save.project().status() == ProjectStatus.COMPLETE || save.project().status() == ProjectStatus.STOPPED) {
+        if (save.project().status() == ProjectStatus.COMPLETE) {
             client.player.sendMessage(Text.translatable("message.mappywall.project_inactive"), false);
             return;
         }
@@ -157,6 +160,25 @@ public final class MappyWallRuntime {
         mapOpenController.reset();
         saveNow(client);
         client.player.sendMessage(Text.translatable("message.mappywall.project_activated"), false);
+    }
+
+    public void deleteProject(MinecraftClient client, String projectId) {
+        if (!hasUsableWorld(client)) {
+            return;
+        }
+
+        WorldContext context = currentContext(client);
+        if (activeSave != null && activeSave.project().id().equals(projectId)) {
+            activeSave = null;
+            activePath = null;
+            mapOpenController.reset();
+        }
+
+        if (persistence.deleteProject(context.serverKey(), context.dimension(), projectId)) {
+            client.player.sendMessage(Text.translatable("message.mappywall.project_deleted"), false);
+        } else {
+            client.player.sendMessage(Text.translatable("message.mappywall.project_missing"), false);
+        }
     }
 
     public void tick(MinecraftClient client) {
@@ -195,7 +217,9 @@ public final class MappyWallRuntime {
         }
 
         RouteStep target = planner.nextOpenStep(activeSave);
-        if (target != null && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
+        if (target != null
+                && target.region().scale() == 0
+                && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
             Optional<Integer> openedMapId = mapOpenController.tryOpenMapInRegion(client, target);
             if (openedMapId.isPresent()) {
                 activeSave = planner.bindCurrentStep(
@@ -242,7 +266,13 @@ public final class MappyWallRuntime {
             lines.add(Text.literal("Target " + target.targetBlock().x() + ", " + target.targetBlock().z()
                     + " (" + Math.round(distance) + " blocks)"));
             if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
-                lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
+                if (target.region().scale() == 0) {
+                    lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
+                } else {
+                    lines.add(Text.translatable("hud.mappywall.scale_needs_existing_map").formatted(Formatting.YELLOW));
+                }
+            } else if (target.region().scale() != 0) {
+                lines.add(Text.translatable("hud.mappywall.scale_needs_existing_map").formatted(Formatting.YELLOW));
             } else {
                 lines.add(Text.translatable("hud.mappywall.open_anywhere_in_region").formatted(Formatting.GRAY));
             }
@@ -427,6 +457,15 @@ public final class MappyWallRuntime {
                 return service.load(path).map(save -> new LoadedProject(path, save));
             } catch (IOException exception) {
                 return Optional.empty();
+            }
+        }
+
+        boolean deleteProject(String serverKey, String dimension, String projectId) {
+            Path path = projectPath(serverKey, dimension, projectId);
+            try {
+                return java.nio.file.Files.deleteIfExists(path);
+            } catch (IOException exception) {
+                return false;
             }
         }
 
