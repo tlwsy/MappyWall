@@ -2,14 +2,14 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.RouteStep;
 import java.util.Optional;
-import net.minecraft.ChatFormatting;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.network.chat.Component;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.inventory.ClickType;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.Hand;
 
 public final class MapOpenController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
@@ -20,14 +20,14 @@ public final class MapOpenController {
         this.scanner = scanner;
     }
 
-    public Optional<Integer> tryOpenMapAtTarget(Minecraft client, RouteStep target) {
+    public Optional<Integer> tryOpenMapAtTarget(MinecraftClient client, RouteStep target) {
         if (cooldownTicks > 0) {
             cooldownTicks--;
             return Optional.empty();
         }
 
-        LocalPlayer player = client.player;
-        if (player == null || client.gameMode == null) {
+        ClientPlayerEntity player = client.player;
+        if (player == null || client.interactionManager == null) {
             return Optional.empty();
         }
 
@@ -35,46 +35,45 @@ public final class MapOpenController {
         if (hotbarSlot < 0) {
             int inventorySlot = scanner.findInventoryEmptyMap(player);
             if (inventorySlot >= 0) {
-                moveInventoryMapToHotbar(client, inventorySlot, player.getInventory().selected);
+                moveInventoryMapToHotbar(client, inventorySlot, player.getInventory().getSelectedSlot());
                 cooldownTicks = 8;
                 return Optional.empty();
             }
-            player.displayClientMessage(Component.literal("MappyWall needs an empty map for "
-                    + target.wallPos().column() + ", " + target.wallPos().row()).withStyle(ChatFormatting.YELLOW), false);
+            player.sendMessage(Text.literal("MappyWall needs an empty map for "
+                    + target.wallPos().column() + ", " + target.wallPos().row()).formatted(Formatting.YELLOW), false);
             cooldownTicks = 40;
             return Optional.empty();
         }
 
-        player.getInventory().selected = hotbarSlot;
-        ItemStack before = player.getMainHandItem();
-        if (!before.is(Items.MAP)) {
+        player.getInventory().setSelectedSlot(hotbarSlot);
+        ItemStack before = player.getMainHandStack();
+        if (!before.isOf(Items.MAP)) {
             cooldownTicks = 8;
             return Optional.empty();
         }
 
-        client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+        client.interactionManager.interactItem(player, Hand.MAIN_HAND);
         cooldownTicks = 20;
 
-        ItemStack after = player.getMainHandItem();
-        if (after.is(Items.FILLED_MAP)) {
+        ItemStack after = player.getMainHandStack();
+        if (after.isOf(Items.FILLED_MAP)) {
             Integer mapId = InventoryMapIds.readMapId(after);
             return mapId == null ? Optional.empty() : Optional.of(mapId);
         }
         return Optional.empty();
     }
 
-    private void moveInventoryMapToHotbar(Minecraft client, int inventorySlot, int hotbarSlot) {
-        if (client.gameMode == null || client.player == null) {
+    private void moveInventoryMapToHotbar(MinecraftClient client, int inventorySlot, int hotbarSlot) {
+        if (client.interactionManager == null || client.player == null) {
             return;
         }
         int containerSlot = inventorySlot < 9 ? HOTBAR_CONTAINER_OFFSET + inventorySlot : inventorySlot;
-        client.gameMode.handleInventoryMouseClick(
-                client.player.containerMenu.containerId,
+        client.interactionManager.clickSlot(
+                client.player.currentScreenHandler.syncId,
                 containerSlot,
                 hotbarSlot,
-                ClickType.SWAP,
+                SlotActionType.SWAP,
                 client.player
         );
     }
 }
-

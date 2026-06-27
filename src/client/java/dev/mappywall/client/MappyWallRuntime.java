@@ -20,9 +20,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.ChatFormatting;
-import net.minecraft.client.Minecraft;
-import net.minecraft.network.chat.Component;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 
 public final class MappyWallRuntime {
     private static final int SAVE_INTERVAL_TICKS = 100;
@@ -40,11 +40,11 @@ public final class MappyWallRuntime {
     private int ticksSinceSave;
     private int emptyMapCount;
 
-    public void openConfigScreen(Minecraft client) {
+    public void openConfigScreen(MinecraftClient client) {
         client.setScreen(new MapWallConfigScreen(this));
     }
 
-    public void startManualRun(Minecraft client, int scale, int width, int height) {
+    public void startManualRun(MinecraftClient client, int scale, int width, int height) {
         if (!hasUsableWorld(client)) {
             return;
         }
@@ -66,13 +66,13 @@ public final class MappyWallRuntime {
         activeSave = planner.createSave(project);
         activePath = persistence.projectPath(serverKey, dimension, id);
         saveNow(client);
-        client.player.displayClientMessage(Component.translatable("message.mappywall.started"), false);
+        client.player.sendMessage(Text.translatable("message.mappywall.started"), false);
     }
 
-    public void togglePause(Minecraft client) {
+    public void togglePause(MinecraftClient client) {
         if (activeSave == null) {
             if (hasUsableWorld(client)) {
-                client.player.displayClientMessage(Component.translatable("message.mappywall.no_project"), false);
+                client.player.sendMessage(Text.translatable("message.mappywall.no_project"), false);
             }
             return;
         }
@@ -84,11 +84,11 @@ public final class MappyWallRuntime {
                 .withSession(activeSave.session().withPaused(paused));
         saveNow(client);
 
-        Component message = Component.translatable(paused ? "message.mappywall.paused" : "message.mappywall.resumed");
-        client.player.displayClientMessage(message, false);
+        Text message = Text.translatable(paused ? "message.mappywall.paused" : "message.mappywall.resumed");
+        client.player.sendMessage(message, false);
     }
 
-    public void tick(Minecraft client) {
+    public void tick(MinecraftClient client) {
         if (!hasUsableWorld(client)) {
             return;
         }
@@ -103,9 +103,9 @@ public final class MappyWallRuntime {
         }
 
         activeSave = activeSave.withSession(activeSave.session().withLastPlayerPos(new PlayerBlockPos(
-                client.player.blockPosition().getX(),
-                client.player.blockPosition().getY(),
-                client.player.blockPosition().getZ()
+                client.player.getBlockPos().getX(),
+                client.player.getBlockPos().getY(),
+                client.player.getBlockPos().getZ()
         )));
 
         if (activeSave.session().paused()) {
@@ -141,8 +141,8 @@ public final class MappyWallRuntime {
         periodicSave(client);
     }
 
-    public List<Component> hudLines(Minecraft client) {
-        List<Component> lines = new ArrayList<>();
+    public List<Text> hudLines(MinecraftClient client) {
+        List<Text> lines = new ArrayList<>();
         if (activeSave == null) {
             return lines;
         }
@@ -150,24 +150,24 @@ public final class MappyWallRuntime {
         RouteStep target = planner.nextOpenStep(activeSave);
         int completed = activeSave.bindings().size();
         int total = activeSave.route().size();
-        lines.add(Component.literal("MappyWall " + completed + "/" + total).withStyle(ChatFormatting.AQUA));
+        lines.add(Text.literal("MappyWall " + completed + "/" + total).formatted(Formatting.AQUA));
 
         if (activeSave.project().status() == ProjectStatus.COMPLETE) {
-            lines.add(Component.translatable("hud.mappywall.complete").withStyle(ChatFormatting.GREEN));
+            lines.add(Text.translatable("hud.mappywall.complete").formatted(Formatting.GREEN));
         } else if (activeSave.session().paused()) {
-            lines.add(Component.translatable("hud.mappywall.paused").withStyle(ChatFormatting.YELLOW));
+            lines.add(Text.translatable("hud.mappywall.paused").formatted(Formatting.YELLOW));
         }
 
-        lines.add(Component.translatable("hud.mappywall.empty_maps").append(": " + emptyMapCount));
+        lines.add(Text.translatable("hud.mappywall.empty_maps").append(": " + emptyMapCount));
         if (target != null) {
             double distance = Math.sqrt(target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()));
-            lines.add(Component.literal("Target " + target.targetBlock().x() + ", " + target.targetBlock().z()
+            lines.add(Text.literal("Target " + target.targetBlock().x() + ", " + target.targetBlock().z()
                     + " (" + Math.round(distance) + " blocks)"));
-            lines.add(Component.literal("Wall " + (target.wallPos().column() + 1) + ", " + (target.wallPos().row() + 1)));
+            lines.add(Text.literal("Wall " + (target.wallPos().column() + 1) + ", " + (target.wallPos().row() + 1)));
         }
 
         if (activeSave.project().mode().isAutomatic()) {
-            lines.add(Component.translatable("message.mappywall.auto_disabled").withStyle(ChatFormatting.RED));
+            lines.add(Text.translatable("message.mappywall.auto_disabled").formatted(Formatting.RED));
         }
         return lines;
     }
@@ -176,7 +176,7 @@ public final class MappyWallRuntime {
         return 0;
     }
 
-    private void repairManualBindings(Minecraft client) {
+    private void repairManualBindings(MinecraftClient client) {
         List<ObservedMap> observedMaps = inventoryScanner.scanFilledMaps(client);
         BindingRepairResult result = mapIndex.repairManualOpenings(activeSave, observedMaps, Instant.now());
         if (!result.bindings().equals(activeSave.bindings())) {
@@ -186,12 +186,12 @@ public final class MappyWallRuntime {
         if (result.hasWarnings()) {
             activeSave = activeSave.withProject(activeSave.project().withStatus(ProjectStatus.CONFLICT))
                     .withSession(activeSave.session().withPaused(true).withWarnings(result.warnings()));
-            client.player.displayClientMessage(Component.literal(result.warnings().getFirst()).withStyle(ChatFormatting.RED), false);
+            client.player.sendMessage(Text.literal(result.warnings().getFirst()).formatted(Formatting.RED), false);
             saveNow(client);
         }
     }
 
-    private void loadMostRecentProject(Minecraft client) {
+    private void loadMostRecentProject(MinecraftClient client) {
         String serverKey = serverKey(client);
         String dimension = dimensionKey(client);
         Optional<PersistenceBridge.LoadedProject> loaded = persistence.loadMostRecent(serverKey, dimension);
@@ -201,14 +201,14 @@ public final class MappyWallRuntime {
         }
     }
 
-    private void periodicSave(Minecraft client) {
+    private void periodicSave(MinecraftClient client) {
         ticksSinceSave++;
         if (ticksSinceSave >= SAVE_INTERVAL_TICKS) {
             saveNow(client);
         }
     }
 
-    private void saveNow(Minecraft client) {
+    private void saveNow(MinecraftClient client) {
         if (activeSave == null || activePath == null) {
             return;
         }
@@ -216,32 +216,32 @@ public final class MappyWallRuntime {
             persistence.save(activePath, activeSave);
             ticksSinceSave = 0;
         } catch (IOException exception) {
-            client.player.displayClientMessage(Component.literal("MappyWall save failed: " + exception.getMessage())
-                    .withStyle(ChatFormatting.RED), false);
+            client.player.sendMessage(Text.literal("MappyWall save failed: " + exception.getMessage())
+                    .formatted(Formatting.RED), false);
         }
     }
 
-    private void showCompletionOrder(Minecraft client) {
-        client.player.displayClientMessage(Component.literal("MappyWall hanging order:"), false);
+    private void showCompletionOrder(MinecraftClient client) {
+        client.player.sendMessage(Text.literal("MappyWall hanging order:"), false);
         for (String line : hangingOrderFormatter.format(activeSave)) {
-            client.player.displayClientMessage(Component.literal(line), false);
+            client.player.sendMessage(Text.literal(line), false);
         }
     }
 
-    private boolean hasUsableWorld(Minecraft client) {
-        return client.player != null && client.level != null;
+    private boolean hasUsableWorld(MinecraftClient client) {
+        return client.player != null && client.world != null;
     }
 
-    private String dimensionKey(Minecraft client) {
-        return client.level.dimension().location().toString();
+    private String dimensionKey(MinecraftClient client) {
+        return client.world.getRegistryKey().getValue().toString();
     }
 
-    private String serverKey(Minecraft client) {
-        if (client.getCurrentServer() != null) {
-            return "server_" + client.getCurrentServer().ip;
+    private String serverKey(MinecraftClient client) {
+        if (client.getCurrentServerEntry() != null) {
+            return "server_" + client.getCurrentServerEntry().address;
         }
-        if (client.getSingleplayerServer() != null) {
-            return "singleplayer_" + client.getSingleplayerServer().getWorldData().getLevelName();
+        if (client.getServer() != null) {
+            return "singleplayer_" + client.getServer().getSaveProperties().getLevelName();
         }
         return "unknown";
     }
@@ -304,4 +304,3 @@ public final class MappyWallRuntime {
         }
     }
 }
-

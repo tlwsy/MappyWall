@@ -3,62 +3,62 @@ package dev.mappywall.client;
 import dev.mappywall.core.ObservedMap;
 import java.util.ArrayList;
 import java.util.List;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.core.component.DataComponents;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
-import net.minecraft.world.level.saveddata.maps.MapId;
-import net.minecraft.world.level.saveddata.maps.MapItemSavedData;
-import net.minecraft.world.item.MapItem;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.MapIdComponent;
+import net.minecraft.item.FilledMapItem;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.item.map.MapState;
 
 public final class InventoryMapScanner {
-    public int countEmptyMaps(LocalPlayer player) {
+    public int countEmptyMaps(ClientPlayerEntity player) {
         int count = 0;
-        for (ItemStack stack : player.getInventory().items) {
-            if (stack.is(Items.MAP)) {
+        for (ItemStack stack : player.getInventory().getMainStacks()) {
+            if (stack.isOf(Items.MAP)) {
                 count += stack.getCount();
             }
         }
         return count;
     }
 
-    public int findHotbarEmptyMap(LocalPlayer player) {
+    public int findHotbarEmptyMap(ClientPlayerEntity player) {
         for (int slot = 0; slot < 9; slot++) {
-            if (player.getInventory().items.get(slot).is(Items.MAP)) {
+            if (player.getInventory().getMainStacks().get(slot).isOf(Items.MAP)) {
                 return slot;
             }
         }
         return -1;
     }
 
-    public int findInventoryEmptyMap(LocalPlayer player) {
-        for (int slot = 9; slot < player.getInventory().items.size(); slot++) {
-            if (player.getInventory().items.get(slot).is(Items.MAP)) {
+    public int findInventoryEmptyMap(ClientPlayerEntity player) {
+        for (int slot = 9; slot < player.getInventory().getMainStacks().size(); slot++) {
+            if (player.getInventory().getMainStacks().get(slot).isOf(Items.MAP)) {
                 return slot;
             }
         }
         return -1;
     }
 
-    public List<ObservedMap> scanFilledMaps(Minecraft client) {
+    public List<ObservedMap> scanFilledMaps(MinecraftClient client) {
         List<ObservedMap> observed = new ArrayList<>();
-        if (client.level == null || client.player == null) {
+        if (client.world == null || client.player == null) {
             return observed;
         }
 
-        String dimension = client.level.dimension().location().toString();
-        for (ItemStack stack : client.player.getInventory().items) {
-            if (!stack.is(Items.FILLED_MAP)) {
+        String dimension = client.world.getRegistryKey().getValue().toString();
+        for (ItemStack stack : client.player.getInventory().getMainStacks()) {
+            if (!stack.isOf(Items.FILLED_MAP)) {
                 continue;
             }
 
-            MapId mapId = stack.get(DataComponents.MAP_ID);
+            MapIdComponent mapId = stack.get(DataComponentTypes.MAP_ID);
             if (mapId == null) {
                 continue;
             }
 
-            MapItemSavedData data = MapItem.getSavedData(mapId, client.level);
+            MapState data = FilledMapItem.getMapState(mapId, client.world);
             if (data == null) {
                 continue;
             }
@@ -68,4 +68,3 @@ public final class InventoryMapScanner {
         return observed;
     }
 }
-

@@ -1,11 +1,11 @@
 package dev.mappywall.client;
 
-import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.minecraft.client.KeyMapping;
-import net.minecraft.client.Minecraft;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.util.InputUtil;
+import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 public final class MappyWallKeyBindings {
@@ -13,32 +13,32 @@ public final class MappyWallKeyBindings {
     }
 
     public static void register(MappyWallRuntime runtime) {
-        KeyMapping openConfig = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+        KeyBinding.Category category = KeyBinding.Category.create(Identifier.of(MappyWallClient.MOD_ID, "controls"));
+        KeyBinding openConfig = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.mappywall.open_config",
-                InputConstants.Type.KEYSYM,
+                InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_M,
-                "key.category.mappywall.controls"
+                category
         ));
-        KeyMapping pauseResume = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+        KeyBinding pauseResume = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.mappywall.pause_resume",
-                InputConstants.Type.KEYSYM,
+                InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_P,
-                "key.category.mappywall.controls"
+                category
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            while (openConfig.consumeClick()) {
-                runtime.openConfigScreen(Minecraft.getInstance());
+            while (openConfig.wasPressed()) {
+                runtime.openConfigScreen(MinecraftClient.getInstance());
             }
-            while (pauseResume.consumeClick()) {
-                runtime.togglePause(Minecraft.getInstance());
+            while (pauseResume.wasPressed()) {
+                runtime.togglePause(MinecraftClient.getInstance());
             }
         });
     }
 
     @SuppressWarnings("unused")
-    private static ResourceLocation id(String path) {
-        return ResourceLocation.fromNamespaceAndPath(MappyWallClient.MOD_ID, path);
+    private static Identifier id(String path) {
+        return Identifier.of(MappyWallClient.MOD_ID, path);
     }
 }
-

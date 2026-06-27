@@ -2,6 +2,8 @@
 
 MappyWall is a client-only Fabric mod for planning and opening map walls on vanilla-compatible servers.
 
+Current implementation work targets Minecraft `1.21.11` with Yarn mappings while Minecraft `26.1.2` mappings mature.
+
 ## MVP boundaries
 
 - Only manual routing is active in `0.1.0`.
@@ -18,4 +20,3 @@ Map bindings use region signatures instead of contiguous map ids. A binding is v
 ## Server compatibility
 
 Inventory operations are conservative and re-check client state before continuing. If an operation cannot be verified, the run pauses and the HUD tells the player what needs attention. Automatic movement is behind an explicit mode and remains off until a later milestone.
-

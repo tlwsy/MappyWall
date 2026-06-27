@@ -1,16 +1,15 @@
 package dev.mappywall.client;
 
-import net.minecraft.core.component.DataComponents;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.saveddata.maps.MapId;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.MapIdComponent;
+import net.minecraft.item.ItemStack;
 
 public final class InventoryMapIds {
     private InventoryMapIds() {
     }
 
     public static Integer readMapId(ItemStack stack) {
-        MapId mapId = stack.get(DataComponents.MAP_ID);
+        MapIdComponent mapId = stack.get(DataComponentTypes.MAP_ID);
         return mapId == null ? null : mapId.id();
     }
 }
-

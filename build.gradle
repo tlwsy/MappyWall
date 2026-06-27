@@ -13,7 +13,7 @@ base {
 
 def fabricEnabled = providers.gradleProperty("enableFabric")
         .map { it.toBoolean() }
-        .orElse(false)
+        .orElse(true)
         .get()
 
 if (fabricEnabled) {
@@ -47,7 +47,7 @@ dependencies {
 
     if (fabricEnabled) {
         minecraft "com.mojang:minecraft:${project.minecraft_version}"
-        mappings loom.officialMojangMappings()
+        mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
         modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
         modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
     }
@@ -68,10 +68,10 @@ processResources {
 
 tasks.register("printFabricStatus") {
     group = "help"
-    description = "Explains how to enable Fabric/Loom compilation once mappings are available."
+    description = "Prints the current Fabric/Loom compilation target."
     doLast {
-        println("Core build is active. Fabric client compilation is gated by -PenableFabric=true because 26.1.2 mappings are not currently published.")
-        println("Run: gradle -PenableFabric=true build")
+        println("Fabric build target: Minecraft ${project.minecraft_version}, Yarn ${project.yarn_mappings}, Loader ${project.loader_version}, Fabric API ${project.fabric_version}.")
+        println("Use -PenableFabric=false for core-only unit tests if client mappings or dependencies are temporarily unavailable.")
     }
 }
 

@@ -1,5 +1,6 @@
 {
   "key.category.mappywall.controls": "MappyWall",
+  "key.categories.mappywall.controls": "MappyWall",
   "key.mappywall.open_config": "打开 MappyWall 设置",
   "key.mappywall.pause_resume": "暂停/继续 MappyWall 跑图",
   "screen.mappywall.config.title": "MappyWall 设置",
@@ -21,4 +22,3 @@
   "message.mappywall.no_project": "没有正在进行的 MappyWall 项目。",
   "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"
 }
-

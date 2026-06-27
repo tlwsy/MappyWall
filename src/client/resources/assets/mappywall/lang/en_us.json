@@ -1,5 +1,6 @@
 {
   "key.category.mappywall.controls": "MappyWall",
+  "key.categories.mappywall.controls": "MappyWall",
   "key.mappywall.open_config": "Open MappyWall setup",
   "key.mappywall.pause_resume": "Pause/resume MappyWall run",
   "screen.mappywall.config.title": "MappyWall Setup",
@@ -21,4 +22,3 @@
   "message.mappywall.no_project": "No active MappyWall project.",
   "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."
 }
-
