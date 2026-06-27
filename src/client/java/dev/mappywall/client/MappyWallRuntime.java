@@ -16,13 +16,16 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.WorldSavePath;
 
 public final class MappyWallRuntime {
     private static final int SAVE_INTERVAL_TICKS = 100;
@@ -37,10 +40,15 @@ public final class MappyWallRuntime {
 
     private MapWallSave activeSave;
     private Path activePath;
+    private WorldContext activeContext;
     private int ticksSinceSave;
     private int emptyMapCount;
 
     public void openConfigScreen(MinecraftClient client) {
+        client.setScreen(new MapWallTasksScreen(this));
+    }
+
+    public void openNewProjectScreen(MinecraftClient client) {
         client.setScreen(new MapWallConfigScreen(this));
     }
 
@@ -49,13 +57,20 @@ public final class MappyWallRuntime {
             return;
         }
 
-        String serverKey = serverKey(client);
-        String dimension = dimensionKey(client);
+        ensureWorldContext(client);
+        WorldContext context = currentContext(client);
+        if (activeSave != null) {
+            activeSave = activeSave
+                    .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
+                    .withSession(activeSave.session().withPaused(true));
+            saveNow(client);
+        }
+
         String id = UUID.randomUUID().toString();
         MapWallProject project = planner.createProject(
                 id,
-                serverKey,
-                dimension,
+                context.serverKey(),
+                context.dimension(),
                 scale,
                 width,
                 height,
@@ -64,7 +79,9 @@ public final class MappyWallRuntime {
                 RunMode.MANUAL
         );
         activeSave = planner.createSave(project);
-        activePath = persistence.projectPath(serverKey, dimension, id);
+        activePath = persistence.projectPath(context.serverKey(), context.dimension(), id);
+        activeContext = context;
+        mapOpenController.reset();
         saveNow(client);
         client.player.sendMessage(Text.translatable("message.mappywall.started"), false);
     }
@@ -88,11 +105,70 @@ public final class MappyWallRuntime {
         client.player.sendMessage(message, false);
     }
 
-    public void tick(MinecraftClient client) {
+    public void stopActiveProject(MinecraftClient client) {
+        if (activeSave == null) {
+            if (hasUsableWorld(client)) {
+                client.player.sendMessage(Text.translatable("message.mappywall.no_project"), false);
+            }
+            return;
+        }
+
+        activeSave = activeSave
+                .withProject(activeSave.project().withStatus(ProjectStatus.STOPPED))
+                .withSession(activeSave.session().withPaused(true));
+        saveNow(client);
+        activeSave = null;
+        activePath = null;
+        mapOpenController.reset();
+        if (hasUsableWorld(client)) {
+            client.player.sendMessage(Text.translatable("message.mappywall.stopped"), false);
+        }
+    }
+
+    public void activateProject(MinecraftClient client, String projectId) {
         if (!hasUsableWorld(client)) {
             return;
         }
 
+        WorldContext context = currentContext(client);
+        Optional<PersistenceBridge.LoadedProject> loaded = persistence.loadProject(context.serverKey(), context.dimension(), projectId);
+        if (loaded.isEmpty()) {
+            client.player.sendMessage(Text.translatable("message.mappywall.project_missing"), false);
+            return;
+        }
+
+        MapWallSave save = loaded.get().save();
+        if (save.project().status() == ProjectStatus.COMPLETE || save.project().status() == ProjectStatus.STOPPED) {
+            client.player.sendMessage(Text.translatable("message.mappywall.project_inactive"), false);
+            return;
+        }
+
+        if (activeSave != null && !activeSave.project().id().equals(projectId)) {
+            activeSave = activeSave
+                    .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
+                    .withSession(activeSave.session().withPaused(true));
+            saveNow(client);
+        }
+
+        activeSave = save.withProject(save.project().withStatus(ProjectStatus.RUNNING))
+                .withSession(save.session().withPaused(false));
+        activePath = loaded.get().path();
+        activeContext = context;
+        mapOpenController.reset();
+        saveNow(client);
+        client.player.sendMessage(Text.translatable("message.mappywall.project_activated"), false);
+    }
+
+    public void tick(MinecraftClient client) {
+        if (!hasUsableWorld(client)) {
+            activeSave = null;
+            activePath = null;
+            activeContext = null;
+            mapOpenController.reset();
+            return;
+        }
+
+        ensureWorldContext(client);
         if (activeSave == null) {
             loadMostRecentProject(client);
         }
@@ -120,7 +196,7 @@ public final class MappyWallRuntime {
 
         RouteStep target = planner.nextOpenStep(activeSave);
         if (target != null && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
-            Optional<Integer> openedMapId = mapOpenController.tryOpenMapAtTarget(client, target);
+            Optional<Integer> openedMapId = mapOpenController.tryOpenMapInRegion(client, target);
             if (openedMapId.isPresent()) {
                 activeSave = planner.bindCurrentStep(
                         activeSave,
@@ -143,7 +219,7 @@ public final class MappyWallRuntime {
 
     public List<Text> hudLines(MinecraftClient client) {
         List<Text> lines = new ArrayList<>();
-        if (activeSave == null) {
+        if (activeSave == null || !isActiveContext(client)) {
             return lines;
         }
 
@@ -156,6 +232,8 @@ public final class MappyWallRuntime {
             lines.add(Text.translatable("hud.mappywall.complete").formatted(Formatting.GREEN));
         } else if (activeSave.session().paused()) {
             lines.add(Text.translatable("hud.mappywall.paused").formatted(Formatting.YELLOW));
+        } else {
+            lines.add(Text.translatable("hud.mappywall.pause_hint").formatted(Formatting.GRAY));
         }
 
         lines.add(Text.translatable("hud.mappywall.empty_maps").append(": " + emptyMapCount));
@@ -163,6 +241,11 @@ public final class MappyWallRuntime {
             double distance = Math.sqrt(target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()));
             lines.add(Text.literal("Target " + target.targetBlock().x() + ", " + target.targetBlock().z()
                     + " (" + Math.round(distance) + " blocks)"));
+            if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
+                lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
+            } else {
+                lines.add(Text.translatable("hud.mappywall.open_anywhere_in_region").formatted(Formatting.GRAY));
+            }
             lines.add(Text.literal("Wall " + (target.wallPos().column() + 1) + ", " + (target.wallPos().row() + 1)));
         }
 
@@ -172,8 +255,46 @@ public final class MappyWallRuntime {
         return lines;
     }
 
+    public List<ProjectListItem> listProjects(MinecraftClient client) {
+        if (!hasUsableWorld(client)) {
+            return List.of();
+        }
+
+        WorldContext context = currentContext(client);
+        List<ProjectListItem> items = new ArrayList<>();
+        for (PersistenceBridge.LoadedProject loaded : persistence.listProjects(context.serverKey(), context.dimension())) {
+            MapWallSave save = loaded.save();
+            RouteStep target = planner.nextOpenStep(save);
+            int completed = save.bindings().size();
+            int total = save.route().size();
+            boolean active = activeSave != null && activeSave.project().id().equals(save.project().id()) && isActiveContext(client);
+            String targetText = target == null
+                    ? "-"
+                    : (target.wallPos().column() + 1) + "," + (target.wallPos().row() + 1)
+                            + " @ " + target.region().centerX() + "," + target.region().centerZ();
+            items.add(new ProjectListItem(
+                    save.project().id(),
+                    save.project().status(),
+                    save.project().width(),
+                    save.project().height(),
+                    save.project().scale(),
+                    completed,
+                    total,
+                    targetText,
+                    active
+            ));
+        }
+        return items;
+    }
+
     public int defaultScale() {
         return 0;
+    }
+
+    public boolean hasActiveProject() {
+        return activeSave != null
+                && activeSave.project().status() != ProjectStatus.COMPLETE
+                && activeSave.project().status() != ProjectStatus.STOPPED;
     }
 
     private void repairManualBindings(MinecraftClient client) {
@@ -192,13 +313,32 @@ public final class MappyWallRuntime {
     }
 
     private void loadMostRecentProject(MinecraftClient client) {
-        String serverKey = serverKey(client);
-        String dimension = dimensionKey(client);
-        Optional<PersistenceBridge.LoadedProject> loaded = persistence.loadMostRecent(serverKey, dimension);
+        WorldContext context = currentContext(client);
+        Optional<PersistenceBridge.LoadedProject> loaded = persistence.loadMostRecentActive(context.serverKey(), context.dimension());
         if (loaded.isPresent()) {
             activeSave = loaded.get().save();
             activePath = loaded.get().path();
+            activeContext = context;
+            mapOpenController.reset();
         }
+    }
+
+    private void ensureWorldContext(MinecraftClient client) {
+        WorldContext context = currentContext(client);
+        if (Objects.equals(activeContext, context)) {
+            return;
+        }
+
+        saveNow(client);
+        activeSave = null;
+        activePath = null;
+        activeContext = context;
+        ticksSinceSave = 0;
+        mapOpenController.reset();
+    }
+
+    private boolean isActiveContext(MinecraftClient client) {
+        return hasUsableWorld(client) && Objects.equals(activeContext, currentContext(client));
     }
 
     private void periodicSave(MinecraftClient client) {
@@ -241,9 +381,17 @@ public final class MappyWallRuntime {
             return "server_" + client.getCurrentServerEntry().address;
         }
         if (client.getServer() != null) {
-            return "singleplayer_" + client.getServer().getSaveProperties().getLevelName();
+            try {
+                return "singleplayer_" + client.getServer().getSavePath(WorldSavePath.ROOT).toAbsolutePath().normalize();
+            } catch (RuntimeException exception) {
+                return "singleplayer_" + client.getServer().getSaveProperties().getLevelName();
+            }
         }
         return "unknown";
+    }
+
+    private WorldContext currentContext(MinecraftClient client) {
+        return new WorldContext(serverKey(client), dimensionKey(client));
     }
 
     private static final class PersistenceBridge {
@@ -259,31 +407,58 @@ public final class MappyWallRuntime {
         }
 
         Optional<LoadedProject> loadMostRecent(String serverKey, String dimension) {
+            List<LoadedProject> projects = listProjects(serverKey, dimension);
+            if (projects.isEmpty()) {
+                return Optional.empty();
+            }
+            return Optional.of(projects.getFirst());
+        }
+
+        Optional<LoadedProject> loadMostRecentActive(String serverKey, String dimension) {
+            return listProjects(serverKey, dimension).stream()
+                    .filter(project -> project.save().project().status() != ProjectStatus.COMPLETE)
+                    .filter(project -> project.save().project().status() != ProjectStatus.STOPPED)
+                    .findFirst();
+        }
+
+        Optional<LoadedProject> loadProject(String serverKey, String dimension, String projectId) {
+            Path path = projectPath(serverKey, dimension, projectId);
+            try {
+                return service.load(path).map(save -> new LoadedProject(path, save));
+            } catch (IOException exception) {
+                return Optional.empty();
+            }
+        }
+
+        List<LoadedProject> listProjects(String serverKey, String dimension) {
             Path dimensionDir = configRoot.resolve(sanitize(serverKey)).resolve(sanitize(dimension));
             if (!java.nio.file.Files.isDirectory(dimensionDir)) {
-                return Optional.empty();
+                return List.of();
             }
 
             try (java.util.stream.Stream<Path> files = java.nio.file.Files.list(dimensionDir)) {
                 return files
                         .filter(path -> path.getFileName().toString().endsWith(".json"))
-                        .max((left, right) -> {
+                        .sorted((left, right) -> {
                             try {
-                                return java.nio.file.Files.getLastModifiedTime(left)
-                                        .compareTo(java.nio.file.Files.getLastModifiedTime(right));
+                                return java.nio.file.Files.getLastModifiedTime(right)
+                                        .compareTo(java.nio.file.Files.getLastModifiedTime(left));
                             } catch (IOException exception) {
                                 return 0;
                             }
                         })
-                        .flatMap(path -> {
+                        .map(path -> {
                             try {
-                                return service.load(path).map(save -> new LoadedProject(path, save));
+                                return service.load(path).map(save -> new LoadedProject(path, save)).orElse(null);
                             } catch (IOException exception) {
-                                return Optional.empty();
+                                return null;
                             }
-                        });
+                        })
+                        .filter(Objects::nonNull)
+                        .sorted(Comparator.comparing((LoadedProject loaded) -> loaded.save().project().createdAt()).reversed())
+                        .toList();
             } catch (IOException exception) {
-                return Optional.empty();
+                return List.of();
             }
         }
 
@@ -302,5 +477,21 @@ public final class MappyWallRuntime {
 
         private record LoadedProject(Path path, MapWallSave save) {
         }
+    }
+
+    private record WorldContext(String serverKey, String dimension) {
+    }
+
+    public record ProjectListItem(
+            String id,
+            ProjectStatus status,
+            int width,
+            int height,
+            int scale,
+            int completedSteps,
+            int totalSteps,
+            String targetText,
+            boolean active
+    ) {
     }
 }

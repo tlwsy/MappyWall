@@ -23,7 +23,7 @@ public final class MappyWallKeyBindings {
         KeyBinding pauseResume = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.mappywall.pause_resume",
                 InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_P,
+                GLFW.GLFW_KEY_U,
                 category
         ));
 

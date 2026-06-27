@@ -36,7 +36,7 @@ public final class InventoryMapIndex {
             }
 
             if (boundRegions.contains(signature)) {
-                warnings.add("Map " + observed.mapId() + " duplicates an already bound region " + signature);
+                boundMapIds.add(observed.mapId());
                 continue;
             }
 
@@ -59,4 +59,3 @@ public final class InventoryMapIndex {
         return new BindingRepairResult(repaired, warnings);
     }
 }
-

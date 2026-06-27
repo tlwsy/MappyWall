@@ -1,7 +1,7 @@
 package dev.mappywall.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.time.Instant;
 import java.util.List;
@@ -32,7 +32,7 @@ class InventoryMapIndexTest {
     }
 
     @Test
-    void warnsWhenObservedMapDuplicatesBoundRegion() {
+    void ignoresObservedMapThatDuplicatesBoundRegion() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.bindCurrentStep(planner.createSave(project), 3, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
@@ -42,7 +42,6 @@ class InventoryMapIndexTest {
         BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(save, List.of(duplicate), Instant.EPOCH);
 
         assertEquals(1, result.bindings().size());
-        assertTrue(result.hasWarnings());
+        assertFalse(result.hasWarnings());
     }
 }
-

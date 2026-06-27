@@ -1,7 +1,11 @@
 package dev.mappywall.client;
 
 import dev.mappywall.core.RouteStep;
+import dev.mappywall.core.ObservedMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.ItemStack;
@@ -13,14 +17,42 @@ import net.minecraft.util.Hand;
 
 public final class MapOpenController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
+    private static final int OPEN_WAIT_TICKS = 80;
     private final InventoryMapScanner scanner;
     private int cooldownTicks;
+    private PendingOpening pendingOpening;
 
     public MapOpenController(InventoryMapScanner scanner) {
         this.scanner = scanner;
     }
 
-    public Optional<Integer> tryOpenMapAtTarget(MinecraftClient client, RouteStep target) {
+    public void reset() {
+        cooldownTicks = 0;
+        pendingOpening = null;
+    }
+
+    public Optional<Integer> tryOpenMapInRegion(MinecraftClient client, RouteStep target) {
+        if (pendingOpening != null) {
+            PendingOpening pending = pendingOpening;
+            Optional<Integer> completed = findCompletedOpening(client, target);
+            if (completed.isPresent()) {
+                pendingOpening = null;
+                cooldownTicks = 10;
+                return completed;
+            }
+            if (pendingOpening == null) {
+                cooldownTicks = 10;
+                return Optional.empty();
+            }
+            PendingOpening nextPending = pending.tick();
+            pendingOpening = nextPending;
+            if (nextPending.ticksRemaining() <= 0) {
+                pendingOpening = null;
+                cooldownTicks = 20;
+            }
+            return Optional.empty();
+        }
+
         if (cooldownTicks > 0) {
             cooldownTicks--;
             return Optional.empty();
@@ -52,15 +84,35 @@ public final class MapOpenController {
             return Optional.empty();
         }
 
+        Set<Integer> knownMapIds = currentFilledMapIds(client);
         client.interactionManager.interactItem(player, Hand.MAIN_HAND);
-        cooldownTicks = 20;
+        pendingOpening = new PendingOpening(target.region().signature(), knownMapIds, OPEN_WAIT_TICKS);
+        cooldownTicks = 4;
+        return Optional.empty();
+    }
 
-        ItemStack after = player.getMainHandStack();
-        if (after.isOf(Items.FILLED_MAP)) {
-            Integer mapId = InventoryMapIds.readMapId(after);
-            return mapId == null ? Optional.empty() : Optional.of(mapId);
+    private Optional<Integer> findCompletedOpening(MinecraftClient client, RouteStep target) {
+        if (!pendingOpening.regionSignature().equals(target.region().signature())) {
+            pendingOpening = null;
+            return Optional.empty();
+        }
+
+        for (ObservedMap observed : scanner.scanFilledMaps(client)) {
+            if (observed.regionSignature().equals(pendingOpening.regionSignature())
+                    && !pendingOpening.knownMapIds().contains(observed.mapId())) {
+                return Optional.of(observed.mapId());
+            }
         }
         return Optional.empty();
+    }
+
+    private Set<Integer> currentFilledMapIds(MinecraftClient client) {
+        List<ObservedMap> observedMaps = scanner.scanFilledMaps(client);
+        Set<Integer> mapIds = new HashSet<>(observedMaps.size());
+        for (ObservedMap observed : observedMaps) {
+            mapIds.add(observed.mapId());
+        }
+        return mapIds;
     }
 
     private void moveInventoryMapToHotbar(MinecraftClient client, int inventorySlot, int hotbarSlot) {
@@ -75,5 +127,11 @@ public final class MapOpenController {
                 SlotActionType.SWAP,
                 client.player
         );
+    }
+
+    private record PendingOpening(String regionSignature, Set<Integer> knownMapIds, int ticksRemaining) {
+        PendingOpening tick() {
+            return new PendingOpening(regionSignature, knownMapIds, ticksRemaining - 1);
+        }
     }
 }

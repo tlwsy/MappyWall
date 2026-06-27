@@ -5,6 +5,6 @@ public enum ProjectStatus {
     RUNNING,
     PAUSED,
     COMPLETE,
-    CONFLICT
+    CONFLICT,
+    STOPPED
 }
-

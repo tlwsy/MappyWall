@@ -5,6 +5,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 
 public final class MapWallConfigScreen extends Screen {
@@ -13,6 +14,8 @@ public final class MapWallConfigScreen extends Screen {
     private int wallWidth = 2;
     private int wallHeight = 2;
     private RunMode mode = RunMode.MANUAL;
+    private TextFieldWidget widthField;
+    private TextFieldWidget heightField;
 
     public MapWallConfigScreen(MappyWallRuntime runtime) {
         super(Text.translatable("screen.mappywall.config.title"));
@@ -30,25 +33,27 @@ public final class MapWallConfigScreen extends Screen {
             button.setMessage(label("screen.mappywall.scale", scale));
         }).dimensions(left, y, 200, 20).build());
 
-        addDrawableChild(ButtonWidget.builder(label("screen.mappywall.width", wallWidth), button -> {
-            wallWidth = clampDimension(wallWidth + 1);
-            button.setMessage(label("screen.mappywall.width", wallWidth));
-        }).dimensions(left, y + 24, 98, 20).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("-"), button -> setWidthValue(readWidthValue() - 1))
+                .dimensions(left + 84, y + 24, 20, 20)
+                .build());
 
-        addDrawableChild(ButtonWidget.builder(Text.literal("-"), button -> {
-            wallWidth = clampDimension(wallWidth - 1);
-            rebuildWidgets();
-        }).dimensions(left + 102, y + 24, 20, 20).build());
+        widthField = dimensionField(label("screen.mappywall.width", wallWidth), wallWidth, left + 108, y + 24);
+        addDrawableChild(widthField);
 
-        addDrawableChild(ButtonWidget.builder(label("screen.mappywall.height", wallHeight), button -> {
-            wallHeight = clampDimension(wallHeight + 1);
-            button.setMessage(label("screen.mappywall.height", wallHeight));
-        }).dimensions(left, y + 48, 98, 20).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("+"), button -> setWidthValue(readWidthValue() + 1))
+                .dimensions(left + 180, y + 24, 20, 20)
+                .build());
 
-        addDrawableChild(ButtonWidget.builder(Text.literal("-"), button -> {
-            wallHeight = clampDimension(wallHeight - 1);
-            rebuildWidgets();
-        }).dimensions(left + 102, y + 48, 20, 20).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("-"), button -> setHeightValue(readHeightValue() - 1))
+                .dimensions(left + 84, y + 48, 20, 20)
+                .build());
+
+        heightField = dimensionField(label("screen.mappywall.height", wallHeight), wallHeight, left + 108, y + 48);
+        addDrawableChild(heightField);
+
+        addDrawableChild(ButtonWidget.builder(Text.literal("+"), button -> setHeightValue(readHeightValue() + 1))
+                .dimensions(left + 180, y + 48, 20, 20)
+                .build());
 
         ButtonWidget modeButton = ButtonWidget.builder(Text.literal("Mode: " + mode.name()), button ->
                 MinecraftClient.getInstance().player.sendMessage(Text.translatable("message.mappywall.auto_disabled"), false)
@@ -57,30 +62,79 @@ public final class MapWallConfigScreen extends Screen {
         addDrawableChild(modeButton);
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.start"), button -> {
+            wallWidth = readWidthValue();
+            wallHeight = readHeightValue();
             runtime.startManualRun(MinecraftClient.getInstance(), scale, wallWidth, wallHeight);
             close();
         }).dimensions(left, y + 104, 200, 20).build());
 
+        ButtonWidget pauseButton = ButtonWidget.builder(Text.translatable("screen.mappywall.pause_resume"), button ->
+                runtime.togglePause(MinecraftClient.getInstance())
+        ).dimensions(left, y + 128, 200, 20).build();
+        pauseButton.active = runtime.hasActiveProject();
+        addDrawableChild(pauseButton);
+
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
-                .dimensions(left, y + 128, 200, 20)
+                .dimensions(left, y + 152, 200, 20)
                 .build());
     }
 
     @Override
     public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(graphics, mouseX, mouseY, partialTick);
         graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, this.height / 2 - 104, 0xFFFFFFFF);
         graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_locked"), this.width / 2, this.height / 2 + 8, 0xFFAAAAAA);
+        graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.width"), this.width / 2 - 100, this.height / 2 - 42, 0xFFFFFFFF);
+        graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.height"), this.width / 2 - 100, this.height / 2 - 18, 0xFFFFFFFF);
         super.render(graphics, mouseX, mouseY, partialTick);
-    }
-
-    private void rebuildWidgets() {
-        clearChildren();
-        init();
     }
 
     private Text label(String key, int value) {
         return Text.translatable(key).append(": " + value);
+    }
+
+    private TextFieldWidget dimensionField(Text label, int value, int x, int y) {
+        TextFieldWidget field = new TextFieldWidget(this.textRenderer, x, y, 68, 20, label);
+        field.setMaxLength(2);
+        field.setText(Integer.toString(value));
+        field.setTextPredicate(text -> text.isEmpty() || text.chars().allMatch(Character::isDigit));
+        return field;
+    }
+
+    private int readWidthValue() {
+        wallWidth = readDimension(widthField, wallWidth);
+        setWidthValue(wallWidth);
+        return wallWidth;
+    }
+
+    private int readHeightValue() {
+        wallHeight = readDimension(heightField, wallHeight);
+        setHeightValue(wallHeight);
+        return wallHeight;
+    }
+
+    private int readDimension(TextFieldWidget field, int fallback) {
+        if (field == null || field.getText().isBlank()) {
+            return fallback;
+        }
+        try {
+            return clampDimension(Integer.parseInt(field.getText()));
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
+    }
+
+    private void setWidthValue(int value) {
+        wallWidth = clampDimension(value);
+        if (widthField != null) {
+            widthField.setText(Integer.toString(wallWidth));
+        }
+    }
+
+    private void setHeightValue(int value) {
+        wallHeight = clampDimension(value);
+        if (heightField != null) {
+            heightField.setText(Integer.toString(wallHeight));
+        }
     }
 
     private int clampDimension(int value) {
