@@ -16,7 +16,6 @@ import net.minecraft.util.Hand;
 public final class MapOpenController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
     private static final int OPEN_WAIT_TICKS = 120;
-    private static final int EMPTY_MAP_SCALE = 0;
     private final InventoryMapScanner scanner;
     private int cooldownTicks;
     private PendingOpening pendingOpening;
@@ -59,11 +58,6 @@ public final class MapOpenController {
 
         if (cooldownTicks > 0) {
             cooldownTicks--;
-            return MapOpenAttempt.none();
-        }
-
-        if (target.region().scale() != EMPTY_MAP_SCALE) {
-            cooldownTicks = 40;
             return MapOpenAttempt.none();
         }
 

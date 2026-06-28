@@ -27,6 +27,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.WorldSavePath;
 
 public final class MappyWallRuntime {
@@ -45,6 +46,7 @@ public final class MappyWallRuntime {
     private WorldContext activeContext;
     private int ticksSinceSave;
     private int emptyMapCount;
+    private List<BlockPos> movementPath = List.of();
 
     public void openConfigScreen(MinecraftClient client) {
         client.setScreen(new MapWallTasksScreen(this));
@@ -107,7 +109,7 @@ public final class MappyWallRuntime {
         saveNow(client);
         client.player.sendMessage(Text.translatable("message.mappywall.started"), false);
         if (scale != 0) {
-            client.player.sendMessage(Text.translatable("message.mappywall.scale_requires_existing_maps"), false);
+            client.player.sendMessage(Text.translatable("message.mappywall.scale_empty_maps_open_as_zero"), false);
         }
         if (mode.isAutomatic()) {
             client.player.sendMessage(Text.translatable("message.mappywall.auto_walk_enabled").formatted(Formatting.YELLOW), false);
@@ -240,6 +242,7 @@ public final class MappyWallRuntime {
             activeSave = null;
             activePath = null;
             activeContext = null;
+            movementPath = List.of();
             mapOpenController.reset();
             movementController.release(client);
             return;
@@ -288,6 +291,7 @@ public final class MappyWallRuntime {
         RouteStep target = planner.nextOpenStep(activeSave);
         if (activeSave.project().mode().isAutomatic()) {
             MovementController.MovementResult movement = movementController.tick(client, activeSave, target);
+            movementPath = movement.path();
             if (movement.shouldPause()) {
                 activeSave = activeSave
                         .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
@@ -297,10 +301,11 @@ public final class MappyWallRuntime {
                 periodicSave(client);
                 return;
             }
+        } else {
+            movementPath = List.of();
         }
 
         if (target != null
-                && target.region().scale() == 0
                 && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
             MapOpenController.MapOpenAttempt openAttempt = mapOpenController.tryOpenMapInRegion(client, target);
             if (openAttempt.openedMapIdOptional().isPresent()) {
@@ -356,15 +361,12 @@ public final class MappyWallRuntime {
             lines.add(Text.literal("Target " + target.targetBlock().x() + ", " + target.targetBlock().z()
                     + " (" + Math.round(distance) + " blocks)"));
             if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
-                if (target.region().scale() == 0) {
-                    lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
-                } else {
-                    lines.add(Text.translatable("hud.mappywall.scale_needs_existing_map").formatted(Formatting.YELLOW));
-                }
-            } else if (target.region().scale() != 0) {
-                lines.add(Text.translatable("hud.mappywall.scale_needs_existing_map").formatted(Formatting.YELLOW));
+                lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
             } else {
                 lines.add(Text.translatable("hud.mappywall.open_anywhere_in_region").formatted(Formatting.GRAY));
+            }
+            if (target.region().scale() != 0) {
+                lines.add(Text.translatable("hud.mappywall.scale_empty_maps_open_as_zero").formatted(Formatting.YELLOW));
             }
             lines.add(Text.literal("Wall " + (target.wallPos().column() + 1) + ", " + (target.wallPos().row() + 1)));
         }
@@ -403,7 +405,8 @@ public final class MappyWallRuntime {
                 bounds.maxZ(),
                 target.wallPos().column(),
                 target.wallPos().row(),
-                showPath
+                showPath,
+                showPath ? movementPath : List.of()
         ));
     }
 
@@ -536,6 +539,7 @@ public final class MappyWallRuntime {
         releaseMovementIfAutomatic(MinecraftClient.getInstance());
         activeSave = null;
         activePath = null;
+        movementPath = List.of();
         mapOpenController.reset();
     }
 
@@ -690,7 +694,8 @@ public final class MappyWallRuntime {
             int maxZ,
             int wallColumn,
             int wallRow,
-            boolean showPath
+            boolean showPath,
+            List<BlockPos> path
     ) {
     }
 }

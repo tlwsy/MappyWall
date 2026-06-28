@@ -56,16 +56,17 @@ public final class InventoryMapIndex {
                 continue;
             }
 
-            if (boundRegions.contains(signature)) {
+            if (matchesAnyRouteRegion(routeByRegion, boundRegions, observed)) {
                 boundMapIds.add(observed.mapId());
                 continue;
             }
 
-            if (!unboundByRegion.containsKey(signature)) {
+            String matchingSignature = matchingUnboundRegion(unboundByRegion, observed);
+            if (matchingSignature == null) {
                 continue;
             }
 
-            candidatesByRegion.computeIfAbsent(signature, ignored -> new ArrayList<>()).add(observed);
+            candidatesByRegion.computeIfAbsent(matchingSignature, ignored -> new ArrayList<>()).add(observed);
         }
 
         for (Map.Entry<String, List<ObservedMap>> entry : candidatesByRegion.entrySet()) {
@@ -116,5 +117,38 @@ public final class InventoryMapIndex {
         }
 
         return new BindingRepairResult(repaired, warnings);
+    }
+
+    private boolean matchesAnyRouteRegion(
+            Map<String, RouteStep> routeByRegion,
+            Set<String> candidateSignatures,
+            ObservedMap observed
+    ) {
+        for (String signature : candidateSignatures) {
+            RouteStep step = routeByRegion.get(signature);
+            if (step != null && matchesObservedMap(step, observed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String matchingUnboundRegion(Map<String, RouteStep> unboundByRegion, ObservedMap observed) {
+        for (Map.Entry<String, RouteStep> entry : unboundByRegion.entrySet()) {
+            if (matchesObservedMap(entry.getValue(), observed)) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesObservedMap(RouteStep step, ObservedMap observed) {
+        if (step.region().signature().equals(observed.regionSignature())) {
+            return true;
+        }
+        return observed.scale() == 0
+                && step.region().scale() > 0
+                && step.region().dimension().equals(observed.dimension())
+                && step.region().bounds().contains(observed.centerX(), observed.centerZ());
     }
 }

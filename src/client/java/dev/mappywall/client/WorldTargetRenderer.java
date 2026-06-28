@@ -8,6 +8,7 @@ import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.RenderSetup;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
 public final class WorldTargetRenderer {
@@ -61,21 +62,35 @@ public final class WorldTargetRenderer {
         line(matrices, vertices, camera, centerX, groundY, centerZ, centerX, markerTopY, centerZ, 64, 224, 255, 255);
 
         if (target.showPath()) {
-            line(
-                    matrices,
-                    vertices,
-                    camera,
-                    client.player.getX(),
-                    playerY + 0.25,
-                    client.player.getZ(),
-                    centerX,
-                    playerY + 0.25,
-                    centerZ,
-                    255,
-                    216,
-                    72,
-                    255
-            );
+            renderPath(matrices, vertices, camera, client, target, centerX, centerZ);
+        }
+    }
+
+    private static void renderPath(
+            MatrixStack matrices,
+            VertexConsumer vertices,
+            Vec3d camera,
+            MinecraftClient client,
+            MappyWallRuntime.RenderTarget target,
+            double centerX,
+            double centerZ
+    ) {
+        double previousX = client.player.getX();
+        double previousY = client.player.getY() + 0.25;
+        double previousZ = client.player.getZ();
+        if (target.path().isEmpty()) {
+            line(matrices, vertices, camera, previousX, previousY, previousZ, centerX, previousY, centerZ, 255, 216, 72, 255);
+            return;
+        }
+
+        for (BlockPos pos : target.path()) {
+            double nextX = pos.getX() + 0.5;
+            double nextY = pos.getY() + 0.25;
+            double nextZ = pos.getZ() + 0.5;
+            line(matrices, vertices, camera, previousX, previousY, previousZ, nextX, nextY, nextZ, 255, 216, 72, 255);
+            previousX = nextX;
+            previousY = nextY;
+            previousZ = nextZ;
         }
     }
 

@@ -157,4 +157,74 @@ class InventoryMapIndexTest {
         assertEquals(second.region().signature(), result.bindings().getFirst().regionSignature());
         assertEquals(BindingVerification.MAP_STATE, result.bindings().getFirst().verifiedBy());
     }
+
+    @Test
+    void repairsScaleZeroMapOpenedInsideHigherScaleRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 2, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+
+        ObservedMap openedScaleZeroMap = new ObservedMap(
+                50,
+                "minecraft:overworld",
+                0,
+                first.region().centerX(),
+                first.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(openedScaleZeroMap),
+                Instant.EPOCH
+        );
+
+        assertFalse(result.hasWarnings());
+        assertEquals(1, result.bindings().size());
+        assertEquals(first.wallPos(), result.bindings().getFirst().wallPos());
+        assertEquals(first.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(50, result.bindings().getFirst().mapId());
+    }
+
+    @Test
+    void ignoresScaleZeroMapInsideAlreadyBoundHigherScaleRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 2, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        RouteStep second = save.route().get(1);
+        save = save.withBindings(List.of(new MapBinding(
+                first.wallPos(),
+                first.region().signature(),
+                50,
+                Instant.EPOCH,
+                BindingVerification.TARGET_CAPTURE
+        )));
+
+        ObservedMap alreadyBoundScaleZeroMap = new ObservedMap(
+                50,
+                "minecraft:overworld",
+                0,
+                first.region().centerX(),
+                first.region().centerZ()
+        );
+        ObservedMap nextScaleZeroMap = new ObservedMap(
+                51,
+                "minecraft:overworld",
+                0,
+                second.region().centerX(),
+                second.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(alreadyBoundScaleZeroMap, nextScaleZeroMap),
+                Instant.EPOCH
+        );
+
+        assertFalse(result.hasWarnings());
+        assertEquals(2, result.bindings().size());
+        assertEquals(second.region().signature(), result.bindings().get(1).regionSignature());
+        assertEquals(51, result.bindings().get(1).mapId());
+    }
 }
