@@ -23,11 +23,14 @@ import net.minecraft.item.BlockItem;
 import net.minecraft.item.BoatItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
+import net.minecraft.util.PlayerInput;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
@@ -39,9 +42,11 @@ public final class MovementController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
     private static final double ARRIVAL_DISTANCE_BLOCKS = 4.0;
     private static final double WAYPOINT_DISTANCE_BLOCKS = 1.25;
+    private static final double BOAT_PLACE_REACH_BLOCKS = 4.75;
     private static final float MOVE_ALIGNMENT_DEGREES = 75.0F;
     private static final float SPRINT_ALIGNMENT_DEGREES = 35.0F;
     private static final float MOVEMENT_TURN_DEGREES = 12.0F;
+    private static final double AGGRESSIVE_INPUT_THRESHOLD = 0.28;
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
@@ -55,7 +60,8 @@ public final class MovementController {
     private static final int ELYTRA_FIREWORK_AGGRESSIVE_COOLDOWN_TICKS = 48;
     private static final double ELYTRA_FIREWORK_DISTANCE = 48.0;
     private static final double ELYTRA_LOW_SPEED = 0.55;
-    private static final double ELYTRA_LOW_ALTITUDE = 72.0;
+    private static final double ELYTRA_CRUISE_ALTITUDE = 192.0;
+    private static final double ELYTRA_CLIMB_MARGIN = 8.0;
     private static final ExecutorService PATH_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "MappyWall Path Planner");
         thread.setDaemon(true);
@@ -138,20 +144,9 @@ public final class MovementController {
     }
 
     public void release(MinecraftClient client) {
-        if (client.options != null) {
-            client.options.forwardKey.setPressed(false);
-            client.options.backKey.setPressed(false);
-            client.options.leftKey.setPressed(false);
-            client.options.rightKey.setPressed(false);
-            client.options.jumpKey.setPressed(false);
-            client.options.sneakKey.setPressed(false);
-            client.options.sprintKey.setPressed(false);
-            client.options.useKey.setPressed(false);
-            client.options.attackKey.setPressed(false);
-        }
-        movementKeysHeld = false;
-        useKeyHeld = false;
-        attackKeyHeld = false;
+        releaseMovementKeys(client);
+        releaseUseKey(client);
+        releaseAttackKey(client);
         breakingBlock = null;
         cancelPendingPlan();
     }
@@ -207,6 +202,18 @@ public final class MovementController {
         BlockPos pos = waypoint.pos();
         double targetX = pos.getX() + 0.5;
         double targetZ = pos.getZ() + 0.5;
+        if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
+            setDirectionalMovementKeys(
+                    client,
+                    player,
+                    targetX - player.getX(),
+                    targetZ - player.getZ(),
+                    jump,
+                    sneak,
+                    sprint
+            );
+            return MovementResult.active(pathSnapshot());
+        }
         float yawError = faceMovement(player, targetX - player.getX(), targetZ - player.getZ());
         boolean aligned = yawError <= MOVE_ALIGNMENT_DEGREES;
         boolean sprinting = sprint && yawError <= SPRINT_ALIGNMENT_DEGREES;
@@ -216,6 +223,19 @@ public final class MovementController {
 
     private MovementResult recoverTowardTarget(MinecraftClient client, ClientPlayerEntity player, RouteStep target) {
         BlockPos navigationTarget = navigationTarget(player, target);
+        if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
+            setDirectionalMovementKeys(
+                    client,
+                    player,
+                    navigationTarget.getX() + 0.5 - player.getX(),
+                    navigationTarget.getZ() + 0.5 - player.getZ(),
+                    true,
+                    false,
+                    true
+            );
+            return MovementResult.active(List.of(navigationTarget));
+        }
+
         float yawError = faceMovement(
                 player,
                 navigationTarget.getX() + 0.5 - player.getX(),
@@ -259,6 +279,23 @@ public final class MovementController {
             BlockPos navigationTarget,
             AutomationStyle style
     ) {
+        if (style == AutomationStyle.AGGRESSIVE) {
+            if (player.isOnGround()) {
+                setMovementKeys(client, true, false, false, false, true, false, true);
+                return MovementResult.active(List.of(navigationTarget));
+            }
+            releaseMovementKeys(client);
+            if (elytraStartCooldown <= 0) {
+                player.networkHandler.sendPacket(new ClientCommandC2SPacket(
+                        player,
+                        ClientCommandC2SPacket.Mode.START_FALL_FLYING
+                ));
+                player.startGliding();
+                elytraStartCooldown = ELYTRA_START_COOLDOWN_TICKS;
+            }
+            return MovementResult.active(List.of(navigationTarget));
+        }
+
         float yawError = faceMovement(
                 player,
                 navigationTarget.getX() + 0.5 - player.getX(),
@@ -292,13 +329,19 @@ public final class MovementController {
         double dx = navigationTarget.getX() + 0.5 - player.getX();
         double dz = navigationTarget.getZ() + 0.5 - player.getZ();
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
-        faceElytra(player, dx, dz, horizontalDistance, style);
+        double cruiseAltitude = elytraCruiseAltitude(client);
+        boolean climbing = player.getY() < cruiseAltitude - ELYTRA_CLIMB_MARGIN;
+        if (climbing) {
+            faceElytraClimb(player, dx, dz, style);
+        } else {
+            faceElytra(player, dx, dz, horizontalDistance, style);
+        }
 
         Vec3d velocity = player.getVelocity();
         double horizontalSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
         boolean needsBoost = horizontalDistance > ELYTRA_FIREWORK_DISTANCE
                 || horizontalSpeed < ELYTRA_LOW_SPEED
-                || player.getY() < ELYTRA_LOW_ALTITUDE;
+                || climbing;
         if (needsBoost && fireworkCooldown <= 0) {
             int slot = findFirework(player);
             if (slot < 0) {
@@ -322,10 +365,15 @@ public final class MovementController {
     }
 
     private MovementResult swimOrBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
-        if (!player.hasVehicle() && boatCooldown <= 0
-                && tryUseBoat(client, player, waypoint, currentAutomationStyle())) {
-            boatCooldown = BOAT_COOLDOWN_TICKS;
-            return MovementResult.active(pathSnapshot());
+        if (!player.hasVehicle()) {
+            AutomationStyle style = currentAutomationStyle();
+            if (tryBoardNearbyBoat(client, player, waypoint.pos(), style)) {
+                return MovementResult.active(pathSnapshot());
+            }
+            if (boatCooldown <= 0 && tryPlaceBoat(client, player, waypoint, style)) {
+                boatCooldown = BOAT_COOLDOWN_TICKS;
+                return MovementResult.active(pathSnapshot());
+            }
         }
         return moveToward(client, player, waypoint, true);
     }
@@ -348,7 +396,11 @@ public final class MovementController {
         }
 
         releaseMovementKeys(client);
-        faceBlock(player, block);
+        if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
+            sendServerLookAt(player, block.toCenterPos());
+        } else {
+            faceBlock(player, block);
+        }
         setAttackKey(client, true);
         Direction side = Direction.getFacing(
                 player.getX() - (block.getX() + 0.5),
@@ -393,7 +445,11 @@ public final class MovementController {
         }
 
         releaseMovementKeys(client);
-        face(player, hit.getPos().x - player.getX(), hit.getPos().y - player.getEyeY(), hit.getPos().z - player.getZ(), true);
+        if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
+            sendServerLookAt(player, hit.getPos());
+        } else {
+            face(player, hit.getPos().x - player.getX(), hit.getPos().y - player.getEyeY(), hit.getPos().z - player.getZ(), true);
+        }
         client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
         player.swingHand(Hand.MAIN_HAND);
         placeCooldown = PLACE_COOLDOWN_TICKS;
@@ -437,7 +493,7 @@ public final class MovementController {
         return true;
     }
 
-    private boolean tryUseBoat(
+    private boolean tryPlaceBoat(
             MinecraftClient client,
             ClientPlayerEntity player,
             LocalPathPlanner.PathStep waypoint,
@@ -446,12 +502,9 @@ public final class MovementController {
         if (client.interactionManager == null || client.world == null) {
             return false;
         }
-        BlockPos waterPos = waypoint.pos();
-        if (!player.isTouchingWater() && !client.world.getFluidState(waterPos).isIn(net.minecraft.registry.tag.FluidTags.WATER)) {
+        BlockPos waterPos = bestBoatWaterPos(client, player, waypoint.pos());
+        if (waterPos == null) {
             return false;
-        }
-        if (tryBoardNearbyBoat(client, player, waterPos, style)) {
-            return true;
         }
         int slot = findBoat(player);
         if (slot < 0) {
@@ -460,6 +513,7 @@ public final class MovementController {
         if (!selectOrMoveToHotbar(client, player, slot)) {
             return true;
         }
+
         boolean canInteractNow = style == AutomationStyle.AGGRESSIVE;
         if (!canInteractNow) {
             float yawError = faceMovement(
@@ -479,15 +533,94 @@ public final class MovementController {
         if (!canInteractNow) {
             return true;
         }
-        BlockHitResult hit = new BlockHitResult(
-                Vec3d.ofCenter(waterPos),
-                Direction.UP,
-                waterPos,
-                false
-        );
-        client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
-        player.swingHand(Hand.MAIN_HAND);
+        useBoatItemAtWater(client, player, waterPos, style);
         return true;
+    }
+
+    private BlockPos bestBoatWaterPos(MinecraftClient client, ClientPlayerEntity player, BlockPos waypoint) {
+        if (client.world == null) {
+            return null;
+        }
+        BlockPos playerPos = player.getBlockPos();
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+        BlockPos.Mutable mutable = new BlockPos.Mutable();
+        for (int dx = -4; dx <= 4; dx++) {
+            for (int dz = -4; dz <= 4; dz++) {
+                for (int dy = -2; dy <= 1; dy++) {
+                    mutable.set(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getZ() + dz);
+                    BlockPos candidate = mutable.toImmutable();
+                    if (!isBoatWater(client, candidate)) {
+                        continue;
+                    }
+                    double eyeDistance = player.getEyePos().squaredDistanceTo(Vec3d.ofCenter(candidate));
+                    if (eyeDistance > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS) {
+                        continue;
+                    }
+                    double waypointDistance = candidate.getSquaredDistance(waypoint);
+                    double score = waypointDistance + eyeDistance * 0.25;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = candidate;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean isBoatWater(MinecraftClient client, BlockPos pos) {
+        return client.world != null
+                && client.world.getFluidState(pos).isIn(net.minecraft.registry.tag.FluidTags.WATER)
+                && client.world.getBlockState(pos.up()).getCollisionShape(client.world, pos.up()).isEmpty();
+    }
+
+    private void useBoatItemAtWater(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            BlockPos waterPos,
+            AutomationStyle style
+    ) {
+        Vec3d hit = Vec3d.ofCenter(waterPos).add(0.0, -0.15, 0.0);
+        if (style == AutomationStyle.AGGRESSIVE) {
+            float oldYaw = player.getYaw();
+            float oldPitch = player.getPitch();
+            float[] look = lookAngles(player, hit);
+            sendServerLook(player, look[0], look[1]);
+            player.setYaw(look[0]);
+            player.setPitch(look[1]);
+            client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+            player.swingHand(Hand.MAIN_HAND);
+            player.setYaw(oldYaw);
+            player.setPitch(oldPitch);
+            return;
+        }
+        client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+        player.swingHand(Hand.MAIN_HAND);
+    }
+
+    private float[] lookAngles(ClientPlayerEntity player, Vec3d target) {
+        double dx = target.x - player.getX();
+        double dy = target.y - player.getEyeY();
+        double dz = target.z - player.getZ();
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float pitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
+        return new float[] { yaw, pitch };
+    }
+
+    private void sendServerLook(ClientPlayerEntity player, float yaw, float pitch) {
+        player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
+                yaw,
+                pitch,
+                player.isOnGround(),
+                player.horizontalCollision
+        ));
+    }
+
+    private void sendServerLookAt(ClientPlayerEntity player, Vec3d target) {
+        float[] look = lookAngles(player, target);
+        sendServerLook(player, look[0], look[1]);
     }
 
     private boolean tryBoardNearbyBoat(
@@ -536,15 +669,32 @@ public final class MovementController {
         }
 
         float targetPitch;
-        if (player.getY() < ELYTRA_LOW_ALTITUDE) {
-            targetPitch = -14.0F;
-        } else if (horizontalDistance < 32.0) {
+        if (horizontalDistance < 32.0) {
             targetPitch = 12.0F;
         } else {
             targetPitch = 2.0F;
         }
         float pitchDelta = MathHelper.wrapDegrees(targetPitch - player.getPitch());
         player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -8.0F, 8.0F));
+    }
+
+    private void faceElytraClimb(ClientPlayerEntity player, double dx, double dz, AutomationStyle style) {
+        if (dx * dx + dz * dz > 0.0001) {
+            float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+            float maxTurn = style == AutomationStyle.AGGRESSIVE ? 22.0F : 12.0F;
+            float yawDelta = MathHelper.wrapDegrees(targetYaw - player.getYaw());
+            player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -maxTurn, maxTurn));
+        }
+
+        float pitchDelta = MathHelper.wrapDegrees(-24.0F - player.getPitch());
+        player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -10.0F, 10.0F));
+    }
+
+    private double elytraCruiseAltitude(MinecraftClient client) {
+        if (client.world == null) {
+            return ELYTRA_CRUISE_ALTITUDE;
+        }
+        return Math.min(ELYTRA_CRUISE_ALTITUDE, client.world.getTopYInclusive() - 24.0);
     }
 
     private boolean hasEquippedElytra(ClientPlayerEntity player) {
@@ -814,6 +964,7 @@ public final class MovementController {
         client.options.sneakKey.setPressed(sneak);
         client.options.sprintKey.setPressed(sprint);
         movementKeysHeld = forward || back || left || right || jump || sneak || sprint;
+        sendPlayerInput(client, forward, back, left, right, jump, sneak, sprint);
     }
 
     private void releaseMovementKeys(MinecraftClient client) {
@@ -828,6 +979,49 @@ public final class MovementController {
         client.options.sneakKey.setPressed(false);
         client.options.sprintKey.setPressed(false);
         movementKeysHeld = false;
+        sendPlayerInput(client, false, false, false, false, false, false, false);
+    }
+
+    private void setDirectionalMovementKeys(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            double dx,
+            double dz,
+            boolean jump,
+            boolean sneak,
+            boolean sprint
+    ) {
+        double length = Math.sqrt(dx * dx + dz * dz);
+        if (length <= 0.0001) {
+            setMovementKeys(client, false, false, false, false, jump, sneak, false);
+            return;
+        }
+
+        double yawRadians = Math.toRadians(player.getYaw());
+        double forwardX = -Math.sin(yawRadians);
+        double forwardZ = Math.cos(yawRadians);
+        double leftX = Math.cos(yawRadians);
+        double leftZ = Math.sin(yawRadians);
+        double targetX = dx / length;
+        double targetZ = dz / length;
+        double forwardDot = targetX * forwardX + targetZ * forwardZ;
+        double leftDot = targetX * leftX + targetZ * leftZ;
+
+        boolean forward = forwardDot > AGGRESSIVE_INPUT_THRESHOLD;
+        boolean back = forwardDot < -AGGRESSIVE_INPUT_THRESHOLD;
+        boolean left = leftDot > AGGRESSIVE_INPUT_THRESHOLD;
+        boolean right = leftDot < -AGGRESSIVE_INPUT_THRESHOLD;
+        if (!forward && !back && !left && !right) {
+            if (Math.abs(forwardDot) >= Math.abs(leftDot)) {
+                forward = forwardDot >= 0.0;
+                back = !forward;
+            } else {
+                left = leftDot >= 0.0;
+                right = !left;
+            }
+        }
+
+        setMovementKeys(client, forward, back, left, right, jump, sneak, sprint && forward && !back);
     }
 
     private void setAttackKey(MinecraftClient client, boolean pressed) {
@@ -852,6 +1046,32 @@ public final class MovementController {
         }
         client.options.useKey.setPressed(pressed);
         useKeyHeld = pressed;
+    }
+
+    private void releaseUseKey(MinecraftClient client) {
+        if (client.options == null || !useKeyHeld) {
+            return;
+        }
+        client.options.useKey.setPressed(false);
+        useKeyHeld = false;
+    }
+
+    private void sendPlayerInput(
+            MinecraftClient client,
+            boolean forward,
+            boolean back,
+            boolean left,
+            boolean right,
+            boolean jump,
+            boolean sneak,
+            boolean sprint
+    ) {
+        if (client.player == null) {
+            return;
+        }
+        client.player.networkHandler.sendPacket(new PlayerInputC2SPacket(
+                new PlayerInput(forward, back, left, right, jump, sneak, sprint)
+        ));
     }
 
     private float faceMovement(ClientPlayerEntity player, double dx, double dz) {
