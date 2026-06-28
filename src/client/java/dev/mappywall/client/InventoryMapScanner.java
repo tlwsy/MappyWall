@@ -2,7 +2,9 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.ObservedMap;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.component.DataComponentTypes;
@@ -39,6 +41,21 @@ public final class InventoryMapScanner {
             }
         }
         return -1;
+    }
+
+    public Set<Integer> scanFilledMapIds(ClientPlayerEntity player) {
+        Set<Integer> ids = new HashSet<>();
+        for (ItemStack stack : player.getInventory().getMainStacks()) {
+            if (!stack.isOf(Items.FILLED_MAP)) {
+                continue;
+            }
+
+            Integer mapId = InventoryMapIds.readMapId(stack);
+            if (mapId != null) {
+                ids.add(mapId);
+            }
+        }
+        return ids;
     }
 
     public List<ObservedMap> scanFilledMaps(MinecraftClient client) {

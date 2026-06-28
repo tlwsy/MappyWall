@@ -2,8 +2,6 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.ObservedMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import net.minecraft.client.MinecraftClient;
@@ -17,11 +15,12 @@ import net.minecraft.util.Hand;
 
 public final class MapOpenController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
-    private static final int OPEN_WAIT_TICKS = 80;
+    private static final int OPEN_WAIT_TICKS = 120;
     private static final int EMPTY_MAP_SCALE = 0;
     private final InventoryMapScanner scanner;
     private int cooldownTicks;
     private PendingOpening pendingOpening;
+    private String blockedRegionSignature;
 
     public MapOpenController(InventoryMapScanner scanner) {
         this.scanner = scanner;
@@ -30,43 +29,52 @@ public final class MapOpenController {
     public void reset() {
         cooldownTicks = 0;
         pendingOpening = null;
+        blockedRegionSignature = null;
     }
 
-    public Optional<Integer> tryOpenMapInRegion(MinecraftClient client, RouteStep target) {
+    public MapOpenAttempt tryOpenMapInRegion(MinecraftClient client, RouteStep target) {
         if (pendingOpening != null) {
             PendingOpening pending = pendingOpening;
             Optional<Integer> completed = findCompletedOpening(client, target);
             if (completed.isPresent()) {
                 pendingOpening = null;
                 cooldownTicks = 10;
-                return completed;
+                blockedRegionSignature = null;
+                return MapOpenAttempt.opened(completed.get());
             }
             if (pendingOpening == null) {
                 cooldownTicks = 10;
-                return Optional.empty();
+                return MapOpenAttempt.none();
             }
             PendingOpening nextPending = pending.tick();
             pendingOpening = nextPending;
             if (nextPending.ticksRemaining() <= 0) {
                 pendingOpening = null;
-                cooldownTicks = 20;
+                cooldownTicks = 100;
+                blockedRegionSignature = pending.regionSignature();
+                return MapOpenAttempt.pause(Text.translatable("message.mappywall.open_unverified"));
             }
-            return Optional.empty();
+            return MapOpenAttempt.none();
         }
 
         if (cooldownTicks > 0) {
             cooldownTicks--;
-            return Optional.empty();
+            return MapOpenAttempt.none();
         }
 
         if (target.region().scale() != EMPTY_MAP_SCALE) {
             cooldownTicks = 40;
-            return Optional.empty();
+            return MapOpenAttempt.none();
         }
 
         ClientPlayerEntity player = client.player;
         if (player == null || client.interactionManager == null) {
-            return Optional.empty();
+            return MapOpenAttempt.none();
+        }
+
+        if (target.region().signature().equals(blockedRegionSignature)) {
+            cooldownTicks = 20;
+            return MapOpenAttempt.none();
         }
 
         int hotbarSlot = scanner.findHotbarEmptyMap(player);
@@ -75,26 +83,26 @@ public final class MapOpenController {
             if (inventorySlot >= 0) {
                 moveInventoryMapToHotbar(client, inventorySlot, player.getInventory().getSelectedSlot());
                 cooldownTicks = 8;
-                return Optional.empty();
+                return MapOpenAttempt.none();
             }
             player.sendMessage(Text.literal("MappyWall needs an empty map for "
                     + target.wallPos().column() + ", " + target.wallPos().row()).formatted(Formatting.YELLOW), false);
             cooldownTicks = 40;
-            return Optional.empty();
+            return MapOpenAttempt.none();
         }
 
         player.getInventory().setSelectedSlot(hotbarSlot);
         ItemStack before = player.getMainHandStack();
         if (!before.isOf(Items.MAP)) {
             cooldownTicks = 8;
-            return Optional.empty();
+            return MapOpenAttempt.none();
         }
 
         Set<Integer> knownMapIds = currentFilledMapIds(client);
         client.interactionManager.interactItem(player, Hand.MAIN_HAND);
         pendingOpening = new PendingOpening(target.region().signature(), knownMapIds, hotbarSlot, OPEN_WAIT_TICKS);
         cooldownTicks = 4;
-        return Optional.empty();
+        return MapOpenAttempt.none();
     }
 
     private Optional<Integer> findCompletedOpening(MinecraftClient client, RouteStep target) {
@@ -108,6 +116,12 @@ public final class MapOpenController {
             return Optional.of(selectedMapId);
         }
 
+        Set<Integer> newMapIds = currentFilledMapIds(client);
+        newMapIds.removeAll(pendingOpening.knownMapIds());
+        if (newMapIds.size() == 1) {
+            return Optional.of(newMapIds.iterator().next());
+        }
+
         for (ObservedMap observed : scanner.scanFilledMaps(client)) {
             if (observed.regionSignature().equals(pendingOpening.regionSignature())
                     && !pendingOpening.knownMapIds().contains(observed.mapId())) {
@@ -118,12 +132,10 @@ public final class MapOpenController {
     }
 
     private Set<Integer> currentFilledMapIds(MinecraftClient client) {
-        List<ObservedMap> observedMaps = scanner.scanFilledMaps(client);
-        Set<Integer> mapIds = new HashSet<>(observedMaps.size());
-        for (ObservedMap observed : observedMaps) {
-            mapIds.add(observed.mapId());
+        if (client.player == null) {
+            return Set.of();
         }
-        return mapIds;
+        return scanner.scanFilledMapIds(client.player);
     }
 
     private void moveInventoryMapToHotbar(MinecraftClient client, int inventorySlot, int hotbarSlot) {
@@ -154,6 +166,28 @@ public final class MapOpenController {
     private record PendingOpening(String regionSignature, Set<Integer> knownMapIds, int hotbarSlot, int ticksRemaining) {
         PendingOpening tick() {
             return new PendingOpening(regionSignature, knownMapIds, hotbarSlot, ticksRemaining - 1);
+        }
+    }
+
+    public record MapOpenAttempt(Integer openedMapId, Text pauseMessage) {
+        static MapOpenAttempt none() {
+            return new MapOpenAttempt(null, null);
+        }
+
+        static MapOpenAttempt opened(int mapId) {
+            return new MapOpenAttempt(mapId, null);
+        }
+
+        static MapOpenAttempt pause(Text message) {
+            return new MapOpenAttempt(null, message);
+        }
+
+        public Optional<Integer> openedMapIdOptional() {
+            return Optional.ofNullable(openedMapId);
+        }
+
+        public boolean shouldPause() {
+            return pauseMessage != null;
         }
     }
 }

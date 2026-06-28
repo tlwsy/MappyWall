@@ -21,7 +21,7 @@
   "screen.mappywall.pause_resume": "Pause/resume run",
   "screen.mappywall.close": "Close",
   "screen.mappywall.auto_locked": "Automatic modes are planned after the manual MVP.",
-  "screen.mappywall.scale_note": "Note: empty maps open at scale 0; scale 1-4 jobs need existing filled maps at that scale.",
+  "screen.mappywall.scale_note": "Note: MVP auto-opening only supports empty maps at scale 0.",
   "hud.mappywall.paused": "Paused",
   "hud.mappywall.pause_hint": "Press U to pause/resume, M for jobs",
   "hud.mappywall.complete": "Map wall complete",
@@ -30,7 +30,7 @@
   "hud.mappywall.progress": "Progress",
   "hud.mappywall.open_anywhere_in_region": "Open the map anywhere inside the target region",
   "hud.mappywall.inside_target_region": "Inside target region; opening map",
-  "hud.mappywall.scale_needs_existing_map": "This scale cannot be opened from empty maps; prepare a filled map at the same scale",
+  "hud.mappywall.scale_needs_existing_map": "This scale cannot be opened from empty maps; MVP will not consume empty maps here",
   "message.mappywall.started": "MappyWall manual run started.",
   "message.mappywall.paused": "MappyWall run paused.",
   "message.mappywall.resumed": "MappyWall run resumed.",
@@ -40,6 +40,7 @@
   "message.mappywall.project_inactive": "This job is complete and cannot be activated.",
   "message.mappywall.project_activated": "MappyWall job activated.",
   "message.mappywall.project_deleted": "MappyWall job deleted.",
-  "message.mappywall.scale_requires_existing_maps": "Heads up: vanilla empty maps only open at scale 0. This job will bind matching filled maps already in your inventory and will not consume empty maps automatically.",
+  "message.mappywall.scale_requires_existing_maps": "Heads up: vanilla empty maps only open at scale 0. MVP will not auto-open empty maps for scale 1-4 jobs.",
+  "message.mappywall.open_unverified": "MappyWall tried to open a map but could not reliably identify the new map id, so it paused to avoid consuming more empty maps.",
   "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."
 }

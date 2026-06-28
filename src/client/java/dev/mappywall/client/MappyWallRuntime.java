@@ -200,18 +200,23 @@ public final class MappyWallRuntime {
             return;
         }
 
+        if (client.isPaused()) {
+            periodicSave(client);
+            return;
+        }
+
         activeSave = activeSave.withSession(activeSave.session().withLastPlayerPos(new PlayerBlockPos(
                 client.player.getBlockPos().getX(),
                 client.player.getBlockPos().getY(),
                 client.player.getBlockPos().getZ()
         )));
 
+        repairManualBindings(client);
         if (activeSave.session().paused()) {
             periodicSave(client);
             return;
         }
 
-        repairManualBindings(client);
         if (activeSave.project().mode().isAutomatic()) {
             movementController.tick(client, activeSave);
         }
@@ -220,14 +225,20 @@ public final class MappyWallRuntime {
         if (target != null
                 && target.region().scale() == 0
                 && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
-            Optional<Integer> openedMapId = mapOpenController.tryOpenMapInRegion(client, target);
-            if (openedMapId.isPresent()) {
+            MapOpenController.MapOpenAttempt openAttempt = mapOpenController.tryOpenMapInRegion(client, target);
+            if (openAttempt.openedMapIdOptional().isPresent()) {
                 activeSave = planner.bindCurrentStep(
                         activeSave,
-                        openedMapId.get(),
+                        openAttempt.openedMapIdOptional().get(),
                         Instant.now(),
                         BindingVerification.TARGET_CAPTURE
                 );
+                saveNow(client);
+            } else if (openAttempt.shouldPause()) {
+                activeSave = activeSave
+                        .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
+                        .withSession(activeSave.session().withPaused(true).withWarnings(List.of(openAttempt.pauseMessage().getString())));
+                client.player.sendMessage(openAttempt.pauseMessage().copy().formatted(Formatting.YELLOW), false);
                 saveNow(client);
             }
         }

@@ -21,7 +21,7 @@
   "screen.mappywall.pause_resume": "暂停/继续跑图",
   "screen.mappywall.close": "关闭",
   "screen.mappywall.auto_locked": "自动跑图模式将在手动 MVP 之后实现。",
-  "screen.mappywall.scale_note": "提示：空地图只能直接开出比例尺 0；比例尺 1-4 需要已有同尺度地图。",
+  "screen.mappywall.scale_note": "提示：MVP 自动开空地图只支持比例尺 0。",
   "hud.mappywall.paused": "已暂停",
   "hud.mappywall.pause_hint": "按 U 暂停/继续，按 M 管理任务",
   "hud.mappywall.complete": "地图墙已完成",
@@ -30,7 +30,7 @@
   "hud.mappywall.progress": "进度",
   "hud.mappywall.open_anywhere_in_region": "进入目标地图区域即可开图",
   "hud.mappywall.inside_target_region": "已在目标区域，正在开图",
-  "hud.mappywall.scale_needs_existing_map": "该比例尺不能用空地图直接开图，请准备同尺度已填充地图",
+  "hud.mappywall.scale_needs_existing_map": "该比例尺不能用空地图直接开图，MVP 不会自动消耗空地图",
   "message.mappywall.started": "MappyWall 手动跑图已开始。",
   "message.mappywall.paused": "MappyWall 跑图已暂停。",
   "message.mappywall.resumed": "MappyWall 跑图已继续。",
@@ -40,6 +40,7 @@
   "message.mappywall.project_inactive": "这个任务已经完成，不能激活。",
   "message.mappywall.project_activated": "MappyWall 任务已激活。",
   "message.mappywall.project_deleted": "MappyWall 任务已删除。",
-  "message.mappywall.scale_requires_existing_maps": "注意：原版空地图只能开出比例尺 0。当前任务将只自动绑定背包中匹配比例尺的已填充地图，不会自动消耗空地图。",
+  "message.mappywall.scale_requires_existing_maps": "注意：原版空地图只能开出比例尺 0。MVP 不会为比例尺 1-4 自动开空地图。",
+  "message.mappywall.open_unverified": "MappyWall 已尝试开图，但没有稳定识别到新地图 id，已暂停以避免继续消耗空地图。",
   "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"
 }
