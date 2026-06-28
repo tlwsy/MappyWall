@@ -28,7 +28,7 @@
   "screen.mappywall.direction_west": "向西",
   "screen.mappywall.direction_south": "向南",
   "screen.mappywall.direction_north": "向北",
-  "screen.mappywall.start": "开始手动跑图",
+  "screen.mappywall.start": "开始跑图",
   "screen.mappywall.pause_resume": "暂停/继续跑图",
   "screen.mappywall.close": "关闭",
   "screen.mappywall.auto_locked": "自动跑图模式将在手动 MVP 之后实现。",
@@ -63,7 +63,7 @@
   "message.mappywall.open_unverified": "MappyWall 已尝试开图，但没有稳定识别到新地图 id，已暂停以避免继续消耗空地图。",
   "message.mappywall.auto_walk_enabled": "AUTO_WALK 已启用：模组会控制前进键，按 K 急停。",
   "message.mappywall.auto_walk_stuck": "AUTO_WALK 检测到卡住或碰撞，已暂停。",
-  "message.mappywall.auto_walk_no_path": "AUTO_WALK 暂时找不到可执行路径，已暂停。",
+  "message.mappywall.auto_walk_no_path": "AUTO_WALK 暂时找不到完整路径，正在尝试局部推进。",
   "message.mappywall.auto_walk_no_place_block": "AUTO_WALK 需要搭路，但背包里没有允许使用的方块（默认允许圆石和泥土），已暂停。",
   "message.mappywall.emergency_stop": "MappyWall 已急停并暂停任务。",
   "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"

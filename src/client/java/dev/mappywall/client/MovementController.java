@@ -28,8 +28,10 @@ public final class MovementController {
     private static final double ARRIVAL_DISTANCE_BLOCKS = 4.0;
     private static final double WAYPOINT_DISTANCE_BLOCKS = 1.75;
     private static final double STUCK_EPSILON = 0.06;
-    private static final int STUCK_TICKS_LIMIT = 70;
-    private static final int REPLAN_INTERVAL_TICKS = 40;
+    private static final double PLAYER_MOVE_EPSILON = 0.015;
+    private static final int STUCK_TICKS_LIMIT = 90;
+    private static final int REPLAN_INTERVAL_TICKS = 32;
+    private static final int RECOVERY_TICKS = 35;
     private static final int PLACE_COOLDOWN_TICKS = 8;
     private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
@@ -46,8 +48,11 @@ public final class MovementController {
     private int boatCooldown;
     private int eatCooldown;
     private double lastDistance = Double.MAX_VALUE;
+    private double lastWaypointDistance = Double.MAX_VALUE;
+    private Vec3d lastPlayerPos = Vec3d.ZERO;
     private String targetSignature;
     private BlockPos breakingBlock;
+    private int recoveryTicks;
     private boolean movementKeysHeld;
     private boolean useKeyHeld;
 
@@ -88,12 +93,8 @@ public final class MovementController {
         }
         if (waypoint == null) {
             failedReplans++;
-            release(client);
-            if (failedReplans >= 3) {
-                resetProgress();
-                return MovementResult.pause(Text.translatable("message.mappywall.auto_walk_no_path"));
-            }
-            return MovementResult.active(pathSnapshot());
+            recoveryTicks = RECOVERY_TICKS;
+            return recoverTowardTarget(client, player, target);
         }
 
         failedReplans = 0;
@@ -141,7 +142,7 @@ public final class MovementController {
             case SWIM -> swimOrBoat(client, player, waypoint);
             case JUMP -> moveToward(client, player, waypoint, true);
             case DROP -> dropToward(client, player, waypoint);
-            case WALK -> moveToward(client, player, waypoint, player.horizontalCollision);
+            case WALK -> moveToward(client, player, waypoint, player.horizontalCollision || recoveryTicks > 0);
         };
     }
 
@@ -166,9 +167,31 @@ public final class MovementController {
         BlockPos pos = waypoint.pos();
         double targetX = pos.getX() + 0.5;
         double targetZ = pos.getZ() + 0.5;
-        updateLook(player, targetX - player.getX(), pos.getY() + 0.2 - player.getEyeY(), targetZ - player.getZ(), false);
+        faceMovement(player, targetX - player.getX(), targetZ - player.getZ());
         setMovementKeys(client, true, false, false, false, jump, sneak, sprint);
         return MovementResult.active(pathSnapshot());
+    }
+
+    private MovementResult recoverTowardTarget(MinecraftClient client, ClientPlayerEntity player, RouteStep target) {
+        BlockPos navigationTarget = navigationTarget(player, target);
+        faceMovement(
+                player,
+                navigationTarget.getX() + 0.5 - player.getX(),
+                navigationTarget.getZ() + 0.5 - player.getZ()
+        );
+
+        BlockPos obstacle = breakableObstacleAhead(client, player);
+        if (obstacle != null) {
+            LocalPathPlanner.PathStep breakStep = new LocalPathPlanner.PathStep(
+                    player.getBlockPos(),
+                    LocalPathPlanner.StepAction.BREAK,
+                    obstacle
+            );
+            return breakBlock(client, player, breakStep);
+        }
+
+        setMovementKeys(client, true, false, false, false, true, false, true);
+        return MovementResult.active(List.of(navigationTarget));
     }
 
     private MovementResult swimOrBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
@@ -349,8 +372,14 @@ public final class MovementController {
     }
 
     private void updateProgress(ClientPlayerEntity player, RouteStep target, LocalPathPlanner.PathStep waypoint) {
-        double distance = Math.sqrt(target.targetBlock().distanceSquaredTo(player.getX(), player.getZ()));
-        if (distance < lastDistance - STUCK_EPSILON) {
+        BlockPos navigationTarget = navigationTarget(player, target);
+        double distance = Math.sqrt(squaredHorizontalDistance(player, navigationTarget));
+        double waypointDistance = Math.sqrt(squaredHorizontalDistance(player, waypoint.pos()));
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        double playerMoved = playerPos.distanceTo(lastPlayerPos);
+        if (distance < lastDistance - STUCK_EPSILON
+                || waypointDistance < lastWaypointDistance - STUCK_EPSILON
+                || playerMoved > PLAYER_MOVE_EPSILON) {
             stuckTicks = 0;
         } else if (waypoint.action() == LocalPathPlanner.StepAction.WALK
                 || waypoint.action() == LocalPathPlanner.StepAction.JUMP
@@ -359,11 +388,20 @@ public final class MovementController {
             stuckTicks++;
         }
         lastDistance = distance;
+        lastWaypointDistance = waypointDistance;
+        lastPlayerPos = playerPos;
 
         if (player.horizontalCollision || stuckTicks >= STUCK_TICKS_LIMIT) {
             replanCooldown = 0;
             stuckTicks = 0;
+            recoveryTicks = RECOVERY_TICKS;
         }
+    }
+
+    private double squaredHorizontalDistance(ClientPlayerEntity player, BlockPos pos) {
+        double dx = pos.getX() + 0.5 - player.getX();
+        double dz = pos.getZ() + 0.5 - player.getZ();
+        return dx * dx + dz * dz;
     }
 
     private int findAllowedFood(ClientPlayerEntity player) {
@@ -450,6 +488,35 @@ public final class MovementController {
         return !state.getCollisionShape(client.world, pos).isEmpty();
     }
 
+    private BlockPos breakableObstacleAhead(MinecraftClient client, ClientPlayerEntity player) {
+        if (client.world == null || !config.blockBreakingEnabled()) {
+            return null;
+        }
+
+        Direction direction = player.getHorizontalFacing();
+        BlockPos feet = player.getBlockPos().offset(direction);
+        BlockPos head = feet.up();
+        if (isBreakableObstacle(client, feet)) {
+            return feet;
+        }
+        if (isBreakableObstacle(client, head)) {
+            return head;
+        }
+        return null;
+    }
+
+    private boolean isBreakableObstacle(MinecraftClient client, BlockPos pos) {
+        if (client.world == null) {
+            return false;
+        }
+        BlockState state = client.world.getBlockState(pos);
+        if (state.getCollisionShape(client.world, pos).isEmpty()) {
+            return false;
+        }
+        String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+        return config.allowsBreak(blockId);
+    }
+
     private void setMovementKeys(
             MinecraftClient client,
             boolean forward,
@@ -495,8 +562,12 @@ public final class MovementController {
         useKeyHeld = pressed;
     }
 
-    private void updateLook(ClientPlayerEntity player, double dx, double dy, double dz, boolean includePitch) {
-        face(player, dx, dy, dz, includePitch);
+    private void faceMovement(ClientPlayerEntity player, double dx, double dz) {
+        if (dx * dx + dz * dz <= 0.0001) {
+            return;
+        }
+        float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        player.setYaw(targetYaw);
     }
 
     private void faceBlock(ClientPlayerEntity player, BlockPos block) {
@@ -533,6 +604,9 @@ public final class MovementController {
         if (eatCooldown > 0) {
             eatCooldown--;
         }
+        if (recoveryTicks > 0) {
+            recoveryTicks--;
+        }
     }
 
     private void resetProgress() {
@@ -542,8 +616,25 @@ public final class MovementController {
         stuckTicks = 0;
         failedReplans = 0;
         lastDistance = Double.MAX_VALUE;
+        lastWaypointDistance = Double.MAX_VALUE;
+        lastPlayerPos = Vec3d.ZERO;
         targetSignature = null;
         breakingBlock = null;
+        recoveryTicks = 0;
+    }
+
+    private BlockPos navigationTarget(ClientPlayerEntity player, RouteStep target) {
+        int targetX = MathHelper.clamp(
+                player.getBlockPos().getX(),
+                target.region().bounds().minX(),
+                target.region().bounds().maxX()
+        );
+        int targetZ = MathHelper.clamp(
+                player.getBlockPos().getZ(),
+                target.region().bounds().minZ(),
+                target.region().bounds().maxZ()
+        );
+        return new BlockPos(targetX, player.getBlockPos().getY(), targetZ);
     }
 
     public record MovementResult(boolean moving, boolean waitingForChunk, Text pauseMessage, List<BlockPos> path) {

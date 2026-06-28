@@ -18,9 +18,9 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.World;
 
 public final class LocalPathPlanner {
-    private static final int MAX_NODES = 3600;
-    private static final int MAX_HORIZONTAL_RANGE = 72;
-    private static final int MAX_VERTICAL_RANGE = 16;
+    private static final int MAX_NODES = 7200;
+    private static final int MAX_HORIZONTAL_RANGE = 96;
+    private static final int MAX_VERTICAL_RANGE = 24;
     private static final int MAX_DROP = 5;
     private static final int REACHED_TARGET_RADIUS = 3;
 
@@ -38,7 +38,7 @@ public final class LocalPathPlanner {
     public PathPlan plan(ClientPlayerEntity player, RouteStep routeStep, AutoNavigationConfig config) {
         World world = player.getEntityWorld();
         BlockPos start = stableFeetPos(world, player.getBlockPos());
-        BlockPos target = new BlockPos(routeStep.targetBlock().x(), start.getY(), routeStep.targetBlock().z());
+        BlockPos target = nearestRegionTarget(start, routeStep);
         SearchNode startNode = new SearchNode(start, null, StepAction.WALK, null, 0.0, heuristic(start, target));
         PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingDouble(SearchNode::score));
         Map<BlockPos, Double> bestCost = new HashMap<>();
@@ -345,6 +345,12 @@ public final class LocalPathPlanner {
             return true;
         }
         return MathHelper.floor(Math.sqrt(pos.getSquaredDistance(target))) <= REACHED_TARGET_RADIUS;
+    }
+
+    private BlockPos nearestRegionTarget(BlockPos start, RouteStep routeStep) {
+        int targetX = MathHelper.clamp(start.getX(), routeStep.region().bounds().minX(), routeStep.region().bounds().maxX());
+        int targetZ = MathHelper.clamp(start.getZ(), routeStep.region().bounds().minZ(), routeStep.region().bounds().maxZ());
+        return new BlockPos(targetX, start.getY(), targetZ);
     }
 
     private double heuristic(BlockPos pos, BlockPos target) {

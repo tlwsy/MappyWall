@@ -28,7 +28,7 @@
   "screen.mappywall.direction_west": "West",
   "screen.mappywall.direction_south": "South",
   "screen.mappywall.direction_north": "North",
-  "screen.mappywall.start": "Start manual run",
+  "screen.mappywall.start": "Start run",
   "screen.mappywall.pause_resume": "Pause/resume run",
   "screen.mappywall.close": "Close",
   "screen.mappywall.auto_locked": "Automatic modes are planned after the manual MVP.",
@@ -63,7 +63,7 @@
   "message.mappywall.open_unverified": "MappyWall tried to open a map but could not reliably identify the new map id, so it paused to avoid consuming more empty maps.",
   "message.mappywall.auto_walk_enabled": "AUTO_WALK enabled: MappyWall will control forward movement. Press K to stop.",
   "message.mappywall.auto_walk_stuck": "AUTO_WALK detected a collision or stalled movement and paused.",
-  "message.mappywall.auto_walk_no_path": "AUTO_WALK could not find an executable local path and paused.",
+  "message.mappywall.auto_walk_no_path": "AUTO_WALK could not find a complete path and is trying local recovery.",
   "message.mappywall.auto_walk_no_place_block": "AUTO_WALK needs to bridge, but no allowed block is available. Cobblestone and dirt are allowed by default.",
   "message.mappywall.emergency_stop": "MappyWall emergency-stopped and paused the job.",
   "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."
