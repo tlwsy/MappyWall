@@ -13,6 +13,7 @@ public record MapWallProject(
         MapRegion anchorRegion,
         RunMode mode,
         PostOpenMode postOpenMode,
+        AutomationStyle automationStyle,
         ProjectStatus status,
         Instant createdAt
 ) {
@@ -24,6 +25,9 @@ public record MapWallProject(
         Objects.requireNonNull(mode, "mode");
         if (postOpenMode == null) {
             postOpenMode = PostOpenMode.OPEN_FIRST;
+        }
+        if (automationStyle == null) {
+            automationStyle = AutomationStyle.NORMAL;
         }
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(createdAt, "createdAt");
@@ -58,6 +62,7 @@ public record MapWallProject(
                 anchorRegion,
                 mode,
                 PostOpenMode.OPEN_FIRST,
+                AutomationStyle.NORMAL,
                 status,
                 createdAt
         );
@@ -74,6 +79,7 @@ public record MapWallProject(
                 anchorRegion,
                 mode,
                 postOpenMode,
+                automationStyle,
                 newStatus,
                 createdAt
         );

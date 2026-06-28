@@ -2,6 +2,7 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.BindingRepairResult;
 import dev.mappywall.core.BindingVerification;
+import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.HangingOrderFormatter;
 import dev.mappywall.core.InventoryMapIndex;
 import dev.mappywall.core.MapBounds;
@@ -62,7 +63,18 @@ public final class MappyWallRuntime {
     }
 
     public void startRun(MinecraftClient client, int scale, int width, int height, RunMode mode) {
-        startRun(client, scale, width, height, mode, WallAnchorMode.FIRST_REGION, 1, 1, PostOpenMode.OPEN_FIRST);
+        startRun(
+                client,
+                scale,
+                width,
+                height,
+                mode,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.OPEN_FIRST,
+                AutomationStyle.NORMAL
+        );
     }
 
     public void startRun(
@@ -75,7 +87,18 @@ public final class MappyWallRuntime {
             int columnStepX,
             int rowStepZ
     ) {
-        startRun(client, scale, width, height, mode, anchorMode, columnStepX, rowStepZ, PostOpenMode.OPEN_FIRST);
+        startRun(
+                client,
+                scale,
+                width,
+                height,
+                mode,
+                anchorMode,
+                columnStepX,
+                rowStepZ,
+                PostOpenMode.OPEN_FIRST,
+                AutomationStyle.NORMAL
+        );
     }
 
     public void startRun(
@@ -88,6 +111,21 @@ public final class MappyWallRuntime {
             int columnStepX,
             int rowStepZ,
             PostOpenMode postOpenMode
+    ) {
+        startRun(client, scale, width, height, mode, anchorMode, columnStepX, rowStepZ, postOpenMode, AutomationStyle.NORMAL);
+    }
+
+    public void startRun(
+            MinecraftClient client,
+            int scale,
+            int width,
+            int height,
+            RunMode mode,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ,
+            PostOpenMode postOpenMode,
+            AutomationStyle automationStyle
     ) {
         if (!hasUsableWorld(client)) {
             return;
@@ -116,7 +154,8 @@ public final class MappyWallRuntime {
                 anchorMode,
                 columnStepX,
                 rowStepZ,
-                postOpenMode
+                postOpenMode,
+                automationStyle
         );
         activeSave = planner.createSave(project, columnStepX, rowStepZ);
         activePath = persistence.projectPath(context.serverKey(), context.dimension(), id);
@@ -128,7 +167,7 @@ public final class MappyWallRuntime {
             client.player.sendMessage(Text.translatable("message.mappywall.scale_empty_maps_open_as_zero"), false);
         }
         if (mode.isAutomatic()) {
-            client.player.sendMessage(Text.translatable("message.mappywall.auto_walk_enabled").formatted(Formatting.YELLOW), false);
+            client.player.sendMessage(Text.translatable(autoMessageKey(mode, automationStyle)).formatted(Formatting.YELLOW), false);
         }
     }
 
@@ -406,7 +445,13 @@ public final class MappyWallRuntime {
         }
 
         if (activeSave.project().mode().isAutomatic()) {
-            lines.add(Text.translatable("hud.mappywall.auto_walk_active").formatted(Formatting.RED));
+            String key = activeSave.project().mode() == RunMode.AUTO_ELYTRA
+                    ? "hud.mappywall.auto_elytra_active"
+                    : "hud.mappywall.auto_walk_active";
+            lines.add(Text.translatable(key).formatted(Formatting.RED));
+            if (activeSave.project().automationStyle() == AutomationStyle.AGGRESSIVE) {
+                lines.add(Text.translatable("hud.mappywall.aggressive_active").formatted(Formatting.RED));
+            }
             if (movementController.isWaitingForChunk()) {
                 lines.add(Text.translatable("hud.mappywall.waiting_for_chunk").formatted(Formatting.YELLOW));
             }
@@ -473,6 +518,7 @@ public final class MappyWallRuntime {
                     save.project().height(),
                     save.project().scale(),
                     save.project().postOpenMode(),
+                    save.project().automationStyle(),
                     completed,
                     total,
                     targetText,
@@ -495,6 +541,17 @@ public final class MappyWallRuntime {
     private boolean reachedFillTarget(MinecraftClient client, RouteStep target) {
         return client.player != null
                 && target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()) <= 16.0;
+    }
+
+    private String autoMessageKey(RunMode mode, AutomationStyle automationStyle) {
+        if (mode == RunMode.AUTO_ELYTRA) {
+            return automationStyle == AutomationStyle.AGGRESSIVE
+                    ? "message.mappywall.auto_elytra_aggressive_enabled"
+                    : "message.mappywall.auto_elytra_enabled";
+        }
+        return automationStyle == AutomationStyle.AGGRESSIVE
+                ? "message.mappywall.auto_walk_aggressive_enabled"
+                : "message.mappywall.auto_walk_enabled";
     }
 
     private void repairManualBindings(MinecraftClient client) {
@@ -724,6 +781,7 @@ public final class MappyWallRuntime {
             int height,
             int scale,
             PostOpenMode postOpenMode,
+            AutomationStyle automationStyle,
             int completedSteps,
             int totalSteps,
             String targetText,

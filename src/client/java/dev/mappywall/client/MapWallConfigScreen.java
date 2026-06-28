@@ -1,11 +1,13 @@
 package dev.mappywall.client;
 
+import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.PostOpenMode;
 import dev.mappywall.core.RunMode;
 import dev.mappywall.core.WallAnchorMode;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.tooltip.Tooltip;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
@@ -17,6 +19,7 @@ public final class MapWallConfigScreen extends Screen {
     private int wallHeight = 2;
     private RunMode mode = RunMode.MANUAL;
     private PostOpenMode postOpenMode = PostOpenMode.OPEN_FIRST;
+    private AutomationStyle automationStyle = AutomationStyle.NORMAL;
     private WallAnchorMode anchorMode = WallAnchorMode.FIRST_REGION;
     private int columnStepX = 1;
     private int rowStepZ = 1;
@@ -77,16 +80,25 @@ public final class MapWallConfigScreen extends Screen {
         }).dimensions(left + 102, y + 96, 98, 20).build());
 
         addDrawableChild(ButtonWidget.builder(modeLabel(), button -> {
-            mode = mode == RunMode.MANUAL ? RunMode.AUTO_WALK : RunMode.MANUAL;
+            mode = nextMode(mode);
             button.setMessage(modeLabel());
         }).dimensions(left, y + 120, 200, 20).build());
+
+        addDrawableChild(ButtonWidget.builder(automationStyleLabel(), button -> {
+            automationStyle = automationStyle == AutomationStyle.NORMAL
+                    ? AutomationStyle.AGGRESSIVE
+                    : AutomationStyle.NORMAL;
+            button.setMessage(automationStyleLabel());
+        }).dimensions(left, y + 144, 200, 20)
+                .tooltip(Tooltip.of(Text.translatable("screen.mappywall.automation_style_tooltip")))
+                .build());
 
         addDrawableChild(ButtonWidget.builder(postOpenLabel(), button -> {
             postOpenMode = postOpenMode == PostOpenMode.OPEN_FIRST
                     ? PostOpenMode.FILL_AFTER_OPEN
                     : PostOpenMode.OPEN_FIRST;
             button.setMessage(postOpenLabel());
-        }).dimensions(left, y + 144, 200, 20).build());
+        }).dimensions(left, y + 168, 200, 20).build());
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.start"), button -> {
             wallWidth = readWidthValue();
@@ -100,16 +112,11 @@ public final class MapWallConfigScreen extends Screen {
                     anchorMode,
                     columnStepX,
                     rowStepZ,
-                    postOpenMode
+                    postOpenMode,
+                    automationStyle
             );
             close();
-        }).dimensions(left, y + 168, 200, 20).build());
-
-        ButtonWidget pauseButton = ButtonWidget.builder(Text.translatable("screen.mappywall.pause_resume"), button ->
-                runtime.togglePause(MinecraftClient.getInstance())
-        ).dimensions(left, y + 192, 200, 20).build();
-        pauseButton.active = runtime.hasActiveProject();
-        addDrawableChild(pauseButton);
+        }).dimensions(left, y + 192, 200, 20).build());
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
                 .dimensions(left, y + 216, 200, 20)
@@ -134,7 +141,14 @@ public final class MapWallConfigScreen extends Screen {
     }
 
     private Text modeLabel() {
-        return Text.translatable("screen.mappywall.mode").append(": " + mode.name());
+        return Text.translatable("screen.mappywall.mode").append(": ").append(Text.translatable(modeKey(mode)));
+    }
+
+    private Text automationStyleLabel() {
+        String key = automationStyle == AutomationStyle.NORMAL
+                ? "screen.mappywall.automation_style_normal"
+                : "screen.mappywall.automation_style_aggressive";
+        return Text.translatable("screen.mappywall.automation_style").append(": ").append(Text.translatable(key));
     }
 
     private Text postOpenLabel() {
@@ -208,5 +222,21 @@ public final class MapWallConfigScreen extends Screen {
 
     private int clampDimension(int value) {
         return Math.max(1, Math.min(64, value));
+    }
+
+    private RunMode nextMode(RunMode current) {
+        return switch (current) {
+            case MANUAL -> RunMode.AUTO_WALK;
+            case AUTO_WALK -> RunMode.AUTO_ELYTRA;
+            case AUTO_ELYTRA -> RunMode.MANUAL;
+        };
+    }
+
+    private String modeKey(RunMode current) {
+        return switch (current) {
+            case MANUAL -> "screen.mappywall.mode_manual";
+            case AUTO_WALK -> "screen.mappywall.mode_auto_walk";
+            case AUTO_ELYTRA -> "screen.mappywall.mode_auto_elytra";
+        };
     }
 }

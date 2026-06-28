@@ -1,5 +1,6 @@
 package dev.mappywall.client;
 
+import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
@@ -16,14 +17,19 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.FoodComponent;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.vehicle.AbstractBoatEntity;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.BoatItem;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
@@ -44,6 +50,12 @@ public final class MovementController {
     private static final int PLACE_COOLDOWN_TICKS = 8;
     private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
+    private static final int ELYTRA_START_COOLDOWN_TICKS = 20;
+    private static final int ELYTRA_FIREWORK_NORMAL_COOLDOWN_TICKS = 70;
+    private static final int ELYTRA_FIREWORK_AGGRESSIVE_COOLDOWN_TICKS = 48;
+    private static final double ELYTRA_FIREWORK_DISTANCE = 48.0;
+    private static final double ELYTRA_LOW_SPEED = 0.55;
+    private static final double ELYTRA_LOW_ALTITUDE = 72.0;
     private static final ExecutorService PATH_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "MappyWall Path Planner");
         thread.setDaemon(true);
@@ -61,6 +73,8 @@ public final class MovementController {
     private int placeCooldown;
     private int boatCooldown;
     private int eatCooldown;
+    private int elytraStartCooldown;
+    private int fireworkCooldown;
     private double lastDistance = Double.MAX_VALUE;
     private double lastWaypointDistance = Double.MAX_VALUE;
     private Vec3d lastPlayerPos = Vec3d.ZERO;
@@ -69,6 +83,7 @@ public final class MovementController {
     private int recoveryTicks;
     private Future<LocalPathPlanner.PathPlan> pendingPlan;
     private String pendingPlanSignature;
+    private AutomationStyle automationStyle = AutomationStyle.NORMAL;
     private boolean movementKeysHeld;
     private boolean useKeyHeld;
     private boolean attackKeyHeld;
@@ -78,6 +93,11 @@ public final class MovementController {
             release(client);
             resetProgress();
             return MovementResult.none();
+        }
+
+        automationStyle = save.project().automationStyle();
+        if (save.project().mode() == RunMode.AUTO_ELYTRA) {
+            return tickElytra(client, save, target);
         }
 
         if (save.project().mode() != RunMode.AUTO_WALK) {
@@ -207,12 +227,111 @@ public final class MovementController {
         return MovementResult.active(List.of(navigationTarget));
     }
 
+    private MovementResult tickElytra(MinecraftClient client, MapWallSave save, RouteStep target) {
+        ClientPlayerEntity player = client.player;
+        if (player == null || client.world == null) {
+            return MovementResult.none();
+        }
+        if (arrivedAtNavigationTarget(player, target)) {
+            release(client);
+            resetProgress();
+            return MovementResult.none();
+        }
+
+        tickCooldowns();
+        BlockPos navigationTarget = navigationTarget(player, target);
+        if (!hasEquippedElytra(player)) {
+            release(client);
+            resetProgress();
+            return MovementResult.pause(Text.translatable("message.mappywall.auto_elytra_no_elytra"));
+        }
+
+        if (!player.isGliding()) {
+            return startOrPrepareElytra(client, player, navigationTarget, save.project().automationStyle());
+        }
+
+        return flyElytraToward(client, player, navigationTarget, save.project().automationStyle());
+    }
+
+    private MovementResult startOrPrepareElytra(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            BlockPos navigationTarget,
+            AutomationStyle style
+    ) {
+        float yawError = faceMovement(
+                player,
+                navigationTarget.getX() + 0.5 - player.getX(),
+                navigationTarget.getZ() + 0.5 - player.getZ()
+        );
+        boolean aligned = yawError <= MOVE_ALIGNMENT_DEGREES;
+        if (player.isOnGround()) {
+            setMovementKeys(client, aligned, false, false, false, aligned, false, aligned);
+            return MovementResult.active(List.of(navigationTarget));
+        }
+
+        releaseMovementKeys(client);
+        if (elytraStartCooldown <= 0 && (style == AutomationStyle.AGGRESSIVE || aligned)) {
+            player.networkHandler.sendPacket(new ClientCommandC2SPacket(
+                    player,
+                    ClientCommandC2SPacket.Mode.START_FALL_FLYING
+            ));
+            player.startGliding();
+            elytraStartCooldown = ELYTRA_START_COOLDOWN_TICKS;
+        }
+        return MovementResult.active(List.of(navigationTarget));
+    }
+
+    private MovementResult flyElytraToward(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            BlockPos navigationTarget,
+            AutomationStyle style
+    ) {
+        releaseMovementKeys(client);
+        double dx = navigationTarget.getX() + 0.5 - player.getX();
+        double dz = navigationTarget.getZ() + 0.5 - player.getZ();
+        double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+        faceElytra(player, dx, dz, horizontalDistance, style);
+
+        Vec3d velocity = player.getVelocity();
+        double horizontalSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+        boolean needsBoost = horizontalDistance > ELYTRA_FIREWORK_DISTANCE
+                || horizontalSpeed < ELYTRA_LOW_SPEED
+                || player.getY() < ELYTRA_LOW_ALTITUDE;
+        if (needsBoost && fireworkCooldown <= 0) {
+            int slot = findFirework(player);
+            if (slot < 0) {
+                release(client);
+                resetProgress();
+                return MovementResult.pause(Text.translatable("message.mappywall.auto_elytra_no_firework"));
+            }
+            if (!selectOrMoveToHotbar(client, player, slot)) {
+                fireworkCooldown = 4;
+                return MovementResult.active(List.of(navigationTarget));
+            }
+            if (client.interactionManager != null) {
+                client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+                player.swingHand(Hand.MAIN_HAND);
+                fireworkCooldown = style == AutomationStyle.AGGRESSIVE
+                        ? ELYTRA_FIREWORK_AGGRESSIVE_COOLDOWN_TICKS
+                        : ELYTRA_FIREWORK_NORMAL_COOLDOWN_TICKS;
+            }
+        }
+        return MovementResult.active(List.of(navigationTarget));
+    }
+
     private MovementResult swimOrBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
-        if (!player.hasVehicle() && boatCooldown <= 0 && tryUseBoat(client, player, waypoint)) {
+        if (!player.hasVehicle() && boatCooldown <= 0
+                && tryUseBoat(client, player, waypoint, currentAutomationStyle())) {
             boatCooldown = BOAT_COOLDOWN_TICKS;
             return MovementResult.active(pathSnapshot());
         }
         return moveToward(client, player, waypoint, true);
+    }
+
+    private AutomationStyle currentAutomationStyle() {
+        return automationStyle;
     }
 
     private MovementResult breakBlock(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
@@ -318,13 +437,21 @@ public final class MovementController {
         return true;
     }
 
-    private boolean tryUseBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
+    private boolean tryUseBoat(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            LocalPathPlanner.PathStep waypoint,
+            AutomationStyle style
+    ) {
         if (client.interactionManager == null || client.world == null) {
             return false;
         }
         BlockPos waterPos = waypoint.pos();
         if (!player.isTouchingWater() && !client.world.getFluidState(waterPos).isIn(net.minecraft.registry.tag.FluidTags.WATER)) {
             return false;
+        }
+        if (tryBoardNearbyBoat(client, player, waterPos, style)) {
+            return true;
         }
         int slot = findBoat(player);
         if (slot < 0) {
@@ -333,16 +460,105 @@ public final class MovementController {
         if (!selectOrMoveToHotbar(client, player, slot)) {
             return true;
         }
-        face(
-                player,
-                waterPos.getX() + 0.5 - player.getX(),
-                waterPos.getY() + 0.2 - player.getEyeY(),
-                waterPos.getZ() + 0.5 - player.getZ(),
-                true
+        boolean canInteractNow = style == AutomationStyle.AGGRESSIVE;
+        if (!canInteractNow) {
+            float yawError = faceMovement(
+                    player,
+                    waterPos.getX() + 0.5 - player.getX(),
+                    waterPos.getZ() + 0.5 - player.getZ()
+            );
+            face(
+                    player,
+                    waterPos.getX() + 0.5 - player.getX(),
+                    waterPos.getY() + 0.2 - player.getEyeY(),
+                    waterPos.getZ() + 0.5 - player.getZ(),
+                    true
+            );
+            canInteractNow = yawError <= SPRINT_ALIGNMENT_DEGREES;
+        }
+        if (!canInteractNow) {
+            return true;
+        }
+        BlockHitResult hit = new BlockHitResult(
+                Vec3d.ofCenter(waterPos),
+                Direction.UP,
+                waterPos,
+                false
         );
-        client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+        client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
         player.swingHand(Hand.MAIN_HAND);
         return true;
+    }
+
+    private boolean tryBoardNearbyBoat(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            BlockPos waterPos,
+            AutomationStyle style
+    ) {
+        if (client.world == null || client.interactionManager == null) {
+            return false;
+        }
+        Box searchBox = new Box(waterPos).expand(style == AutomationStyle.AGGRESSIVE ? 6.0 : 3.0);
+        List<AbstractBoatEntity> boats = client.world.getEntitiesByClass(
+                AbstractBoatEntity.class,
+                searchBox,
+                boat -> boat.isAlive() && !boat.hasPassengers()
+        );
+        if (boats.isEmpty()) {
+            return false;
+        }
+        AbstractBoatEntity boat = boats.stream()
+                .min((left, right) -> Double.compare(left.squaredDistanceTo(player), right.squaredDistanceTo(player)))
+                .orElse(null);
+        if (boat == null) {
+            return false;
+        }
+        boolean canInteractNow = style == AutomationStyle.AGGRESSIVE;
+        if (!canInteractNow) {
+            float yawError = faceMovement(player, boat.getX() - player.getX(), boat.getZ() - player.getZ());
+            canInteractNow = yawError <= SPRINT_ALIGNMENT_DEGREES;
+        }
+        if (!canInteractNow) {
+            return true;
+        }
+        client.interactionManager.interactEntity(player, boat, Hand.MAIN_HAND);
+        player.swingHand(Hand.MAIN_HAND);
+        return true;
+    }
+
+    private void faceElytra(ClientPlayerEntity player, double dx, double dz, double horizontalDistance, AutomationStyle style) {
+        if (dx * dx + dz * dz > 0.0001) {
+            float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+            float maxTurn = style == AutomationStyle.AGGRESSIVE ? 30.0F : 16.0F;
+            float yawDelta = MathHelper.wrapDegrees(targetYaw - player.getYaw());
+            player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -maxTurn, maxTurn));
+        }
+
+        float targetPitch;
+        if (player.getY() < ELYTRA_LOW_ALTITUDE) {
+            targetPitch = -14.0F;
+        } else if (horizontalDistance < 32.0) {
+            targetPitch = 12.0F;
+        } else {
+            targetPitch = 2.0F;
+        }
+        float pitchDelta = MathHelper.wrapDegrees(targetPitch - player.getPitch());
+        player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -8.0F, 8.0F));
+    }
+
+    private boolean hasEquippedElytra(ClientPlayerEntity player) {
+        return player.getEquippedStack(EquipmentSlot.CHEST).isOf(Items.ELYTRA);
+    }
+
+    private int findFirework(ClientPlayerEntity player) {
+        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
+            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+            if (stack.isOf(Items.FIREWORK_ROCKET)) {
+                return slot;
+            }
+        }
+        return -1;
     }
 
     private void requestReplan(MinecraftClient client, RouteStep target) {
@@ -682,6 +898,12 @@ public final class MovementController {
         if (eatCooldown > 0) {
             eatCooldown--;
         }
+        if (elytraStartCooldown > 0) {
+            elytraStartCooldown--;
+        }
+        if (fireworkCooldown > 0) {
+            fireworkCooldown--;
+        }
         if (recoveryTicks > 0) {
             recoveryTicks--;
         }
@@ -699,6 +921,8 @@ public final class MovementController {
         targetSignature = null;
         breakingBlock = null;
         recoveryTicks = 0;
+        elytraStartCooldown = 0;
+        fireworkCooldown = 0;
         cancelPendingPlan();
     }
 

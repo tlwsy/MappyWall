@@ -102,8 +102,9 @@ public final class MapWallTasksScreen extends Screen {
             Text headline = Text.literal(shortId(task.id()) + "  "
                     + task.width() + "x" + task.height()
                     + " S" + task.scale()
-                    + "  " + task.postOpenMode().name()
                     + "  " + task.completedSteps() + "/" + task.totalSteps()
+                    + "  " + localizedPostOpenMode(task)
+                    + "  " + localizedAutomationStyle(task)
                     + "  " + task.status().name());
             if (task.active()) {
                 headline = headline.copy().formatted(Formatting.AQUA);
@@ -148,5 +149,21 @@ public final class MapWallTasksScreen extends Screen {
 
     private String shortId(String id) {
         return id.length() <= 8 ? id : id.substring(0, 8);
+    }
+
+    private String localizedPostOpenMode(MappyWallRuntime.ProjectListItem task) {
+        String key = switch (task.postOpenMode()) {
+            case OPEN_FIRST -> "screen.mappywall.post_open_open_first";
+            case FILL_AFTER_OPEN -> "screen.mappywall.post_open_fill_after_open";
+        };
+        return Text.translatable(key).getString();
+    }
+
+    private String localizedAutomationStyle(MappyWallRuntime.ProjectListItem task) {
+        String key = switch (task.automationStyle()) {
+            case NORMAL -> "screen.mappywall.automation_style_normal";
+            case AGGRESSIVE -> "screen.mappywall.automation_style_aggressive";
+        };
+        return Text.translatable(key).getString();
     }
 }

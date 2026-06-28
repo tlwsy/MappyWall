@@ -61,7 +61,8 @@ public final class MapWallPlanner {
                 anchorMode,
                 columnStepX,
                 rowStepZ,
-                PostOpenMode.OPEN_FIRST
+                PostOpenMode.OPEN_FIRST,
+                AutomationStyle.NORMAL
         );
     }
 
@@ -80,11 +81,48 @@ public final class MapWallPlanner {
             int rowStepZ,
             PostOpenMode postOpenMode
     ) {
+        return createProject(
+                id,
+                serverKey,
+                dimension,
+                scale,
+                width,
+                height,
+                playerX,
+                playerZ,
+                mode,
+                anchorMode,
+                columnStepX,
+                rowStepZ,
+                postOpenMode,
+                AutomationStyle.NORMAL
+        );
+    }
+
+    public MapWallProject createProject(
+            String id,
+            String serverKey,
+            String dimension,
+            int scale,
+            int width,
+            int height,
+            double playerX,
+            double playerZ,
+            RunMode mode,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ,
+            PostOpenMode postOpenMode,
+            AutomationStyle automationStyle
+    ) {
         validateDirectionStep(columnStepX, "columnStepX");
         validateDirectionStep(rowStepZ, "rowStepZ");
         Objects.requireNonNull(anchorMode, "anchorMode");
         if (postOpenMode == null) {
             postOpenMode = PostOpenMode.OPEN_FIRST;
+        }
+        if (automationStyle == null) {
+            automationStyle = AutomationStyle.NORMAL;
         }
         MapRegion reference = MapRegionMath.regionForBlock(dimension, scale, playerX, playerZ);
         MapRegion anchor = anchorFor(reference, width, height, anchorMode, columnStepX, rowStepZ);
@@ -98,6 +136,7 @@ public final class MapWallPlanner {
                 anchor,
                 mode,
                 postOpenMode,
+                automationStyle,
                 ProjectStatus.RUNNING,
                 Instant.now()
         );
