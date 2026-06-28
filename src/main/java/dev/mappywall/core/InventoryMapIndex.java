@@ -41,7 +41,9 @@ public final class InventoryMapIndex {
             String signature = observed.regionSignature();
             String alreadyBoundRegion = boundRegionByMapId.get(observed.mapId());
             if (alreadyBoundRegion != null) {
-                if (!alreadyBoundRegion.equals(signature)) {
+                RouteStep boundStep = routeByRegion.get(alreadyBoundRegion);
+                boolean matchesBoundRegion = boundStep != null && matchesObservedMap(boundStep, observed);
+                if (!matchesBoundRegion) {
                     MapBinding binding = bindingByMapId.get(observed.mapId());
                     if (binding != null && binding.verifiedBy() == BindingVerification.TARGET_CAPTURE) {
                         // Newly opened maps can briefly report a stale/default MapState on the client.
@@ -103,7 +105,10 @@ public final class InventoryMapIndex {
                 continue;
             }
             for (ObservedMap observed : observedMaps) {
-                if (observed.mapId() == binding.mapId() && observed.regionSignature().equals(binding.regionSignature())) {
+                RouteStep boundStep = routeByRegion.get(binding.regionSignature());
+                if (observed.mapId() == binding.mapId()
+                        && boundStep != null
+                        && matchesObservedMap(boundStep, observed)) {
                     repaired.set(index, new MapBinding(
                             binding.wallPos(),
                             binding.regionSignature(),

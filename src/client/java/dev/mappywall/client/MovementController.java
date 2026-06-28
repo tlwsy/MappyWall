@@ -81,6 +81,7 @@ public final class MovementController {
     private int eatCooldown;
     private int elytraStartCooldown;
     private int fireworkCooldown;
+    private int dismountCooldown;
     private double lastDistance = Double.MAX_VALUE;
     private double lastWaypointDistance = Double.MAX_VALUE;
     private Vec3d lastPlayerPos = Vec3d.ZERO;
@@ -114,6 +115,9 @@ public final class MovementController {
 
         ClientPlayerEntity player = client.player;
         if (arrivedAtNavigationTarget(player, target)) {
+            if (player.hasVehicle() && tryDismountVehicle(client, player)) {
+                return MovementResult.active(pathSnapshot());
+            }
             release(client);
             resetProgress();
             return MovementResult.none();
@@ -135,6 +139,11 @@ public final class MovementController {
             failedReplans++;
             recoveryTicks = RECOVERY_TICKS;
             return recoverTowardTarget(client, player, target);
+        }
+
+        if (player.hasVehicle() && waypoint.action() != LocalPathPlanner.StepAction.SWIM
+                && tryDismountVehicle(client, player)) {
+            return MovementResult.active(pathSnapshot());
         }
 
         failedReplans = 0;
@@ -1024,6 +1033,23 @@ public final class MovementController {
         setMovementKeys(client, forward, back, left, right, jump, sneak, sprint && forward && !back);
     }
 
+    private boolean tryDismountVehicle(MinecraftClient client, ClientPlayerEntity player) {
+        if (!player.hasVehicle() || dismountCooldown > 0) {
+            return false;
+        }
+        releaseMovementKeys(client);
+        releaseAttackKey(client);
+        releaseUseKey(client);
+        sendPlayerInput(client, false, false, false, false, false, true, false);
+        if (client.options != null) {
+            client.options.sneakKey.setPressed(true);
+            movementKeysHeld = true;
+        }
+        player.stopRiding();
+        dismountCooldown = 10;
+        return true;
+    }
+
     private void setAttackKey(MinecraftClient client, boolean pressed) {
         if (client.options == null) {
             return;
@@ -1124,6 +1150,9 @@ public final class MovementController {
         if (fireworkCooldown > 0) {
             fireworkCooldown--;
         }
+        if (dismountCooldown > 0) {
+            dismountCooldown--;
+        }
         if (recoveryTicks > 0) {
             recoveryTicks--;
         }
@@ -1143,6 +1172,7 @@ public final class MovementController {
         recoveryTicks = 0;
         elytraStartCooldown = 0;
         fireworkCooldown = 0;
+        dismountCooldown = 0;
         cancelPendingPlan();
     }
 

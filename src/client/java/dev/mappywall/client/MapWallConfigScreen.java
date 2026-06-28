@@ -82,14 +82,14 @@ public final class MapWallConfigScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(modeLabel(), button -> {
             mode = nextMode(mode);
             button.setMessage(modeLabel());
-        }).dimensions(left, y + 120, 200, 20).build());
+        }).dimensions(left, y + 120, 98, 20).build());
 
         addDrawableChild(ButtonWidget.builder(automationStyleLabel(), button -> {
             automationStyle = automationStyle == AutomationStyle.NORMAL
                     ? AutomationStyle.AGGRESSIVE
                     : AutomationStyle.NORMAL;
             button.setMessage(automationStyleLabel());
-        }).dimensions(left, y + 144, 200, 20)
+        }).dimensions(left + 102, y + 120, 98, 20)
                 .tooltip(Tooltip.of(Text.translatable("screen.mappywall.automation_style_tooltip")))
                 .build());
 
@@ -98,7 +98,7 @@ public final class MapWallConfigScreen extends Screen {
                     ? PostOpenMode.FILL_AFTER_OPEN
                     : PostOpenMode.OPEN_FIRST;
             button.setMessage(postOpenLabel());
-        }).dimensions(left, y + 168, 200, 20).build());
+        }).dimensions(left, y + 144, 200, 20).build());
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.start"), button -> {
             wallWidth = readWidthValue();
@@ -116,10 +116,10 @@ public final class MapWallConfigScreen extends Screen {
                     automationStyle
             );
             close();
-        }).dimensions(left, y + 192, 200, 20).build());
+        }).dimensions(left, y + 168, 200, 20).build());
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
-                .dimensions(left, y + 216, 200, 20)
+                .dimensions(left, y + 192, 200, 20)
                 .build());
     }
 
@@ -127,9 +127,11 @@ public final class MapWallConfigScreen extends Screen {
     public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
         int y = Math.max(8, this.height / 2 - 120);
         graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, y - 18, 0xFFFFFFFF);
-        graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_walk_note"), this.width / 2, y + 130, 0xFFAAAAAA);
-        if (this.height >= 274) {
-            graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.scale_note"), this.width / 2, y + 242, 0xFFAAAAAA);
+        if (this.height >= 258) {
+            graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_walk_note"), this.width / 2, y + 218, 0xFFAAAAAA);
+        }
+        if (this.height >= 270) {
+            graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.scale_note"), this.width / 2, y + 230, 0xFFAAAAAA);
         }
         graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.width"), this.width / 2 - 100, y + 30, 0xFFFFFFFF);
         graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.height"), this.width / 2 - 100, y + 54, 0xFFFFFFFF);
@@ -141,14 +143,14 @@ public final class MapWallConfigScreen extends Screen {
     }
 
     private Text modeLabel() {
-        return Text.translatable("screen.mappywall.mode").append(": ").append(Text.translatable(modeKey(mode)));
+        return Text.translatable("screen.mappywall.mode_short").append(": ").append(Text.translatable(modeKey(mode)));
     }
 
     private Text automationStyleLabel() {
         String key = automationStyle == AutomationStyle.NORMAL
                 ? "screen.mappywall.automation_style_normal"
                 : "screen.mappywall.automation_style_aggressive";
-        return Text.translatable("screen.mappywall.automation_style").append(": ").append(Text.translatable(key));
+        return Text.translatable("screen.mappywall.automation_style_short").append(": ").append(Text.translatable(key));
     }
 
     private Text postOpenLabel() {

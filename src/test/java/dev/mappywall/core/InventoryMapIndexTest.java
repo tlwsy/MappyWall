@@ -227,4 +227,37 @@ class InventoryMapIndexTest {
         assertEquals(second.region().signature(), result.bindings().get(1).regionSignature());
         assertEquals(51, result.bindings().get(1).mapId());
     }
+
+    @Test
+    void acceptsPreviouslyBoundScaleZeroMapInsideHigherScaleRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 4, 1, 1, 960, 960, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        save = save.withBindings(List.of(new MapBinding(
+                first.wallPos(),
+                first.region().signature(),
+                52,
+                Instant.EPOCH,
+                BindingVerification.MANUAL_REPAIR
+        )));
+
+        ObservedMap openedScaleZeroMap = new ObservedMap(
+                52,
+                "minecraft:overworld",
+                0,
+                0,
+                0
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(openedScaleZeroMap),
+                Instant.EPOCH
+        );
+
+        assertFalse(result.hasWarnings());
+        assertEquals(first.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(52, result.bindings().getFirst().mapId());
+    }
 }
