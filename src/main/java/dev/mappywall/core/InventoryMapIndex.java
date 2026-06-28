@@ -12,6 +12,8 @@ import java.util.Set;
 public final class InventoryMapIndex {
     public BindingRepairResult repairManualOpenings(MapWallSave save, List<ObservedMap> observedMaps, Instant repairedAt) {
         Map<String, RouteStep> unboundByRegion = new HashMap<>();
+        Map<String, RouteStep> routeByRegion = new HashMap<>();
+        Map<Integer, MapBinding> bindingByMapId = new HashMap<>();
         Map<Integer, String> boundRegionByMapId = new HashMap<>();
         Set<String> boundRegions = new HashSet<>();
         Set<Integer> boundMapIds = new HashSet<>();
@@ -19,11 +21,13 @@ public final class InventoryMapIndex {
         for (MapBinding binding : save.bindings()) {
             boundRegions.add(binding.regionSignature());
             boundMapIds.add(binding.mapId());
+            bindingByMapId.put(binding.mapId(), binding);
             boundRegionByMapId.put(binding.mapId(), binding.regionSignature());
         }
 
         for (RouteStep step : save.route()) {
             String signature = step.region().signature();
+            routeByRegion.put(signature, step);
             if (!boundRegions.contains(signature)) {
                 unboundByRegion.put(signature, step);
             }
@@ -38,9 +42,23 @@ public final class InventoryMapIndex {
             String alreadyBoundRegion = boundRegionByMapId.get(observed.mapId());
             if (alreadyBoundRegion != null) {
                 if (!alreadyBoundRegion.equals(signature)) {
-                    warnings.add("Map " + observed.mapId()
-                            + " was bound to " + alreadyBoundRegion
-                            + " but now reports " + signature);
+                    MapBinding binding = bindingByMapId.get(observed.mapId());
+                    if (binding != null && binding.verifiedBy() == BindingVerification.TARGET_CAPTURE) {
+                        repairTargetCaptureMismatch(
+                                repaired,
+                                binding,
+                                observed,
+                                routeByRegion,
+                                boundRegions,
+                                boundRegionByMapId,
+                                unboundByRegion,
+                                warnings
+                        );
+                    } else {
+                        warnings.add("Map " + observed.mapId()
+                                + " was bound to " + alreadyBoundRegion
+                                + " but now reports " + signature);
+                    }
                 }
                 continue;
             }
@@ -86,5 +104,51 @@ public final class InventoryMapIndex {
         }
 
         return new BindingRepairResult(repaired, warnings);
+    }
+
+    private void repairTargetCaptureMismatch(
+            List<MapBinding> repaired,
+            MapBinding binding,
+            ObservedMap observed,
+            Map<String, RouteStep> routeByRegion,
+            Set<String> boundRegions,
+            Map<Integer, String> boundRegionByMapId,
+            Map<String, RouteStep> unboundByRegion,
+            List<String> warnings
+    ) {
+        String observedSignature = observed.regionSignature();
+        RouteStep correctedStep = routeByRegion.get(observedSignature);
+        if (correctedStep == null) {
+            warnings.add("Map " + observed.mapId()
+                    + " was opened for " + binding.regionSignature()
+                    + " but reports an area outside this wall: " + observedSignature);
+            return;
+        }
+
+        if (boundRegions.contains(observedSignature)) {
+            warnings.add("Map " + observed.mapId()
+                    + " reports already-bound region " + observedSignature
+                    + " instead of " + binding.regionSignature());
+            return;
+        }
+
+        int bindingIndex = repaired.indexOf(binding);
+        if (bindingIndex < 0) {
+            warnings.add("Map " + observed.mapId() + " binding could not be repaired");
+            return;
+        }
+
+        repaired.set(bindingIndex, new MapBinding(
+                correctedStep.wallPos(),
+                observedSignature,
+                observed.mapId(),
+                binding.openedAt(),
+                BindingVerification.MAP_STATE
+        ));
+        boundRegions.remove(binding.regionSignature());
+        boundRegions.add(observedSignature);
+        boundRegionByMapId.put(observed.mapId(), observedSignature);
+        unboundByRegion.put(binding.regionSignature(), routeByRegion.get(binding.regionSignature()));
+        unboundByRegion.remove(observedSignature);
     }
 }

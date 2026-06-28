@@ -24,6 +24,66 @@ class MapWallPlannerTest {
     }
 
     @Test
+    void centersEvenSizedWallAroundPlayerRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1",
+                "local",
+                "minecraft:overworld",
+                0,
+                2,
+                2,
+                0,
+                0,
+                RunMode.MANUAL,
+                WallAnchorMode.CENTER,
+                1,
+                1
+        );
+
+        List<RouteStep> route = planner.planRoute(project, 1, 1);
+
+        assertEquals(-128, route.get(0).region().centerX());
+        assertEquals(-128, route.get(0).region().centerZ());
+        assertEquals(0, route.get(1).region().centerX());
+        assertEquals(-128, route.get(1).region().centerZ());
+        assertEquals(0, route.get(2).region().centerX());
+        assertEquals(0, route.get(2).region().centerZ());
+        assertEquals(-128, route.get(3).region().centerX());
+        assertEquals(0, route.get(3).region().centerZ());
+    }
+
+    @Test
+    void plansRouteTowardWestAndNorthWhenSelected() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1",
+                "local",
+                "minecraft:overworld",
+                0,
+                2,
+                2,
+                0,
+                0,
+                RunMode.MANUAL,
+                WallAnchorMode.FIRST_REGION,
+                -1,
+                -1
+        );
+
+        List<RouteStep> route = planner.planRoute(project, -1, -1);
+
+        assertEquals(0, route.get(0).region().centerX());
+        assertEquals(0, route.get(0).region().centerZ());
+        assertEquals(-128, route.get(1).region().centerX());
+        assertEquals(0, route.get(1).region().centerZ());
+        assertEquals(-128, route.get(2).region().centerX());
+        assertEquals(-128, route.get(2).region().centerZ());
+        assertEquals(0, route.get(3).region().centerX());
+        assertEquals(-128, route.get(3).region().centerZ());
+    }
+
+    @Test
     void bindingAdvancesCurrentStepWithoutAssumingContiguousMapIds() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
@@ -47,4 +107,3 @@ class MapWallPlannerTest {
         assertEquals(4, save.route().size());
     }
 }
-

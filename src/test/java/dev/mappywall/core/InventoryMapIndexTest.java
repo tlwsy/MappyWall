@@ -71,7 +71,15 @@ class InventoryMapIndexTest {
     void warnsWhenPreviouslyBoundMapIdReportsDifferentRegion() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
-        MapWallSave save = planner.bindCurrentStep(planner.createSave(project), 12, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        save = save.withBindings(List.of(new MapBinding(
+                first.wallPos(),
+                first.region().signature(),
+                12,
+                Instant.EPOCH,
+                BindingVerification.MAP_STATE
+        )));
         RouteStep second = save.route().get(1);
 
         ObservedMap conflicting = new ObservedMap(
@@ -87,5 +95,36 @@ class InventoryMapIndexTest {
         assertEquals(1, result.bindings().size());
         assertTrue(result.hasWarnings());
         assertTrue(result.warnings().getFirst().contains("Map 12 was bound"));
+    }
+
+    @Test
+    void repairsTargetCaptureBindingWhenMapStateReportsDifferentUnboundRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        RouteStep second = save.route().get(1);
+        save = save.withBindings(List.of(new MapBinding(
+                second.wallPos(),
+                second.region().signature(),
+                14,
+                Instant.EPOCH,
+                BindingVerification.TARGET_CAPTURE
+        )));
+
+        ObservedMap actual = new ObservedMap(
+                14,
+                "minecraft:overworld",
+                0,
+                first.region().centerX(),
+                first.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(save, List.of(actual), Instant.EPOCH);
+
+        assertFalse(result.hasWarnings());
+        assertEquals(first.wallPos(), result.bindings().getFirst().wallPos());
+        assertEquals(first.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(BindingVerification.MAP_STATE, result.bindings().getFirst().verifiedBy());
     }
 }

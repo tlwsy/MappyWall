@@ -12,6 +12,7 @@ import dev.mappywall.core.PlayerBlockPos;
 import dev.mappywall.core.ProjectStatus;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RunMode;
+import dev.mappywall.core.WallAnchorMode;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -57,6 +58,19 @@ public final class MappyWallRuntime {
     }
 
     public void startRun(MinecraftClient client, int scale, int width, int height, RunMode mode) {
+        startRun(client, scale, width, height, mode, WallAnchorMode.FIRST_REGION, 1, 1);
+    }
+
+    public void startRun(
+            MinecraftClient client,
+            int scale,
+            int width,
+            int height,
+            RunMode mode,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ
+    ) {
         if (!hasUsableWorld(client)) {
             return;
         }
@@ -80,9 +94,12 @@ public final class MappyWallRuntime {
                 height,
                 client.player.getX(),
                 client.player.getZ(),
-                mode
+                mode,
+                anchorMode,
+                columnStepX,
+                rowStepZ
         );
-        activeSave = planner.createSave(project);
+        activeSave = planner.createSave(project, columnStepX, rowStepZ);
         activePath = persistence.projectPath(context.serverKey(), context.dimension(), id);
         activeContext = context;
         mapOpenController.reset();
@@ -254,6 +271,12 @@ public final class MappyWallRuntime {
                 client.player.getBlockPos().getZ()
         )));
 
+        if (activeSave.session().paused()) {
+            movementController.release(client);
+            periodicSave(client);
+            return;
+        }
+
         repairManualBindings(client);
         if (activeSave.session().paused()) {
             movementController.release(client);
@@ -404,9 +427,15 @@ public final class MappyWallRuntime {
             saveNow(client);
         }
         if (result.hasWarnings()) {
+            if (result.warnings().equals(activeSave.session().warnings())) {
+                return;
+            }
             activeSave = activeSave.withProject(activeSave.project().withStatus(ProjectStatus.CONFLICT))
                     .withSession(activeSave.session().withPaused(true).withWarnings(result.warnings()));
             client.player.sendMessage(Text.literal(result.warnings().getFirst()).formatted(Formatting.RED), false);
+            saveNow(client);
+        } else if (!activeSave.session().warnings().isEmpty()) {
+            activeSave = activeSave.withSession(activeSave.session().withWarnings(List.of()));
             saveNow(client);
         }
     }

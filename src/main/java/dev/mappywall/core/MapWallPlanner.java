@@ -17,7 +17,41 @@ public final class MapWallPlanner {
             double playerZ,
             RunMode mode
     ) {
-        MapRegion anchor = MapRegionMath.regionForBlock(dimension, scale, playerX, playerZ);
+        return createProject(
+                id,
+                serverKey,
+                dimension,
+                scale,
+                width,
+                height,
+                playerX,
+                playerZ,
+                mode,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1
+        );
+    }
+
+    public MapWallProject createProject(
+            String id,
+            String serverKey,
+            String dimension,
+            int scale,
+            int width,
+            int height,
+            double playerX,
+            double playerZ,
+            RunMode mode,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ
+    ) {
+        validateDirectionStep(columnStepX, "columnStepX");
+        validateDirectionStep(rowStepZ, "rowStepZ");
+        Objects.requireNonNull(anchorMode, "anchorMode");
+        MapRegion reference = MapRegionMath.regionForBlock(dimension, scale, playerX, playerZ);
+        MapRegion anchor = anchorFor(reference, width, height, anchorMode, columnStepX, rowStepZ);
         return new MapWallProject(
                 id,
                 serverKey,
@@ -33,14 +67,20 @@ public final class MapWallPlanner {
     }
 
     public List<RouteStep> planRoute(MapWallProject project) {
+        return planRoute(project, 1, 1);
+    }
+
+    public List<RouteStep> planRoute(MapWallProject project, int columnStepX, int rowStepZ) {
         Objects.requireNonNull(project, "project");
+        validateDirectionStep(columnStepX, "columnStepX");
+        validateDirectionStep(rowStepZ, "rowStepZ");
         List<RouteStep> steps = new ArrayList<>(project.width() * project.height());
 
         for (int row = 0; row < project.height(); row++) {
             boolean reverse = row % 2 == 1;
             for (int i = 0; i < project.width(); i++) {
                 int column = reverse ? project.width() - 1 - i : i;
-                MapRegion region = MapRegionMath.offset(project.anchorRegion(), column, row);
+                MapRegion region = MapRegionMath.offset(project.anchorRegion(), column * columnStepX, row * rowStepZ);
                 steps.add(new RouteStep(
                         new WallPos(column, row),
                         region,
@@ -54,7 +94,11 @@ public final class MapWallPlanner {
     }
 
     public MapWallSave createSave(MapWallProject project) {
-        List<RouteStep> route = planRoute(project);
+        return createSave(project, 1, 1);
+    }
+
+    public MapWallSave createSave(MapWallProject project, int columnStepX, int rowStepZ) {
+        List<RouteStep> route = planRoute(project, columnStepX, rowStepZ);
         RunSessionState session = new RunSessionState(
                 0,
                 false,
@@ -107,5 +151,27 @@ public final class MapWallPlanner {
         }
         return false;
     }
-}
 
+    private MapRegion anchorFor(
+            MapRegion reference,
+            int width,
+            int height,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ
+    ) {
+        if (anchorMode == WallAnchorMode.FIRST_REGION) {
+            return reference;
+        }
+
+        int anchorGridX = reference.gridX() - Math.floorDiv(width, 2) * columnStepX;
+        int anchorGridZ = reference.gridZ() - Math.floorDiv(height, 2) * rowStepZ;
+        return MapRegionMath.regionForGrid(reference.dimension(), reference.scale(), anchorGridX, anchorGridZ);
+    }
+
+    private void validateDirectionStep(int step, String name) {
+        if (step != 1 && step != -1) {
+            throw new IllegalArgumentException(name + " must be 1 or -1");
+        }
+    }
+}
