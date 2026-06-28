@@ -2,6 +2,7 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
+import dev.mappywall.core.MapBounds;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -24,6 +25,7 @@ public final class LocalPathPlanner {
     private static final int MAX_VERTICAL_RANGE = 10;
     private static final int MAX_DROP = 3;
     private static final int REACHED_TARGET_RADIUS = 3;
+    private static final int REGION_ENTRY_INSET_BLOCKS = 8;
 
     private static final int[][] DIRECTIONS = {
             {1, 0},
@@ -358,12 +360,6 @@ public final class LocalPathPlanner {
     }
 
     private boolean reached(BlockPos pos, RouteStep routeStep, BlockPos target) {
-        if (routeStep.state() == RouteStepState.OPENED) {
-            return MathHelper.floor(Math.sqrt(pos.getSquaredDistance(target))) <= REACHED_TARGET_RADIUS;
-        }
-        if (routeStep.region().bounds().contains(pos.getX(), pos.getZ())) {
-            return true;
-        }
         return MathHelper.floor(Math.sqrt(pos.getSquaredDistance(target))) <= REACHED_TARGET_RADIUS;
     }
 
@@ -371,9 +367,17 @@ public final class LocalPathPlanner {
         if (routeStep.state() == RouteStepState.OPENED) {
             return new BlockPos(routeStep.targetBlock().x(), start.getY(), routeStep.targetBlock().z());
         }
-        int targetX = MathHelper.clamp(start.getX(), routeStep.region().bounds().minX(), routeStep.region().bounds().maxX());
-        int targetZ = MathHelper.clamp(start.getZ(), routeStep.region().bounds().minZ(), routeStep.region().bounds().maxZ());
+        MapBounds bounds = routeStep.region().bounds();
+        int targetX = interiorCoordinate(start.getX(), bounds.minX(), bounds.maxX());
+        int targetZ = interiorCoordinate(start.getZ(), bounds.minZ(), bounds.maxZ());
         return new BlockPos(targetX, start.getY(), targetZ);
+    }
+
+    private int interiorCoordinate(int current, int min, int max) {
+        if (max - min + 1 <= REGION_ENTRY_INSET_BLOCKS * 2) {
+            return MathHelper.clamp(current, min, max);
+        }
+        return MathHelper.clamp(current, min + REGION_ENTRY_INSET_BLOCKS, max - REGION_ENTRY_INSET_BLOCKS);
     }
 
     private double heuristic(BlockPos pos, BlockPos target) {

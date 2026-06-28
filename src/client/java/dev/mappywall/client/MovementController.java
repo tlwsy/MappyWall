@@ -43,10 +43,15 @@ public final class MovementController {
     private static final double ARRIVAL_DISTANCE_BLOCKS = 4.0;
     private static final double WAYPOINT_DISTANCE_BLOCKS = 1.25;
     private static final double BOAT_PLACE_REACH_BLOCKS = 4.75;
+    private static final int REGION_ENTRY_INSET_BLOCKS = 8;
     private static final float MOVE_ALIGNMENT_DEGREES = 75.0F;
     private static final float SPRINT_ALIGNMENT_DEGREES = 35.0F;
     private static final float MOVEMENT_TURN_DEGREES = 12.0F;
     private static final double AGGRESSIVE_INPUT_THRESHOLD = 0.28;
+    private static final double AGGRESSIVE_ELYTRA_CRUISE_SPEED = 1.18;
+    private static final double AGGRESSIVE_ELYTRA_APPROACH_SPEED = 0.72;
+    private static final double AGGRESSIVE_ELYTRA_CLIMB_SPEED = 0.56;
+    private static final double AGGRESSIVE_ELYTRA_MAX_Y_SPEED = 0.72;
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
@@ -290,7 +295,15 @@ public final class MovementController {
     ) {
         if (style == AutomationStyle.AGGRESSIVE) {
             if (player.isOnGround()) {
-                setMovementKeys(client, true, false, false, false, true, false, true);
+                setDirectionalMovementKeys(
+                        client,
+                        player,
+                        navigationTarget.getX() + 0.5 - player.getX(),
+                        navigationTarget.getZ() + 0.5 - player.getZ(),
+                        true,
+                        false,
+                        true
+                );
                 return MovementResult.active(List.of(navigationTarget));
             }
             releaseMovementKeys(client);
@@ -328,6 +341,64 @@ public final class MovementController {
         return MovementResult.active(List.of(navigationTarget));
     }
 
+    private MovementResult flyAggressiveElytraToward(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            BlockPos navigationTarget,
+            double dx,
+            double dz,
+            double horizontalDistance,
+            boolean climbing
+    ) {
+        float[] look = elytraControlLook(player, dx, dz, horizontalDistance, climbing);
+        sendServerLook(player, look[0], look[1]);
+        applyAggressiveElytraVelocity(player, dx, dz, horizontalDistance, climbing);
+
+        Vec3d velocity = player.getVelocity();
+        double horizontalSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+        boolean needsBoost = horizontalDistance > ELYTRA_FIREWORK_DISTANCE
+                || horizontalSpeed < ELYTRA_LOW_SPEED
+                || climbing;
+        if (needsBoost && fireworkCooldown <= 0) {
+            int slot = findFirework(player);
+            if (slot < 0) {
+                release(client);
+                resetProgress();
+                return MovementResult.pause(Text.translatable("message.mappywall.auto_elytra_no_firework"));
+            }
+            if (!selectOrMoveToHotbar(client, player, slot)) {
+                fireworkCooldown = 4;
+                return MovementResult.active(List.of(navigationTarget));
+            }
+            if (client.interactionManager != null) {
+                useItemWithTemporaryLook(client, player, look[0], look[1]);
+                fireworkCooldown = ELYTRA_FIREWORK_AGGRESSIVE_COOLDOWN_TICKS;
+            }
+        }
+        return MovementResult.active(List.of(navigationTarget));
+    }
+
+    private void applyAggressiveElytraVelocity(
+            ClientPlayerEntity player,
+            double dx,
+            double dz,
+            double horizontalDistance,
+            boolean climbing
+    ) {
+        if (horizontalDistance <= 0.0001) {
+            return;
+        }
+        Vec3d current = player.getVelocity();
+        double speed = horizontalDistance < 48.0 ? AGGRESSIVE_ELYTRA_APPROACH_SPEED : AGGRESSIVE_ELYTRA_CRUISE_SPEED;
+        double dirX = dx / horizontalDistance;
+        double dirZ = dz / horizontalDistance;
+        double yVelocity = climbing
+                ? Math.max(current.y, AGGRESSIVE_ELYTRA_CLIMB_SPEED)
+                : current.y * 0.92;
+        yVelocity = Math.max(-0.42, Math.min(AGGRESSIVE_ELYTRA_MAX_Y_SPEED, yVelocity));
+        player.setVelocity(dirX * speed, yVelocity, dirZ * speed);
+    }
+
     private MovementResult flyElytraToward(
             MinecraftClient client,
             ClientPlayerEntity player,
@@ -340,6 +411,10 @@ public final class MovementController {
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
         double cruiseAltitude = elytraCruiseAltitude(client);
         boolean climbing = player.getY() < cruiseAltitude - ELYTRA_CLIMB_MARGIN;
+        if (style == AutomationStyle.AGGRESSIVE) {
+            return flyAggressiveElytraToward(client, player, navigationTarget, dx, dz, horizontalDistance, climbing);
+        }
+
         if (climbing) {
             faceElytraClimb(player, dx, dz, style);
         } else {
@@ -667,6 +742,43 @@ public final class MovementController {
         client.interactionManager.interactEntity(player, boat, Hand.MAIN_HAND);
         player.swingHand(Hand.MAIN_HAND);
         return true;
+    }
+
+    private float[] elytraControlLook(
+            ClientPlayerEntity player,
+            double dx,
+            double dz,
+            double horizontalDistance,
+            boolean climbing
+    ) {
+        float yaw = player.getYaw();
+        if (dx * dx + dz * dz > 0.0001) {
+            yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        }
+        float pitch;
+        if (climbing) {
+            pitch = -24.0F;
+        } else if (horizontalDistance < 32.0) {
+            pitch = 12.0F;
+        } else {
+            pitch = 2.0F;
+        }
+        return new float[] { yaw, pitch };
+    }
+
+    private void useItemWithTemporaryLook(MinecraftClient client, ClientPlayerEntity player, float yaw, float pitch) {
+        if (client.interactionManager == null) {
+            return;
+        }
+        float oldYaw = player.getYaw();
+        float oldPitch = player.getPitch();
+        sendServerLook(player, yaw, pitch);
+        player.setYaw(yaw);
+        player.setPitch(pitch);
+        client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+        player.swingHand(Hand.MAIN_HAND);
+        player.setYaw(oldYaw);
+        player.setPitch(oldPitch);
     }
 
     private void faceElytra(ClientPlayerEntity player, double dx, double dz, double horizontalDistance, AutomationStyle style) {
@@ -1198,15 +1310,23 @@ public final class MovementController {
         }
         int targetX = MathHelper.clamp(
                 player.getBlockPos().getX(),
-                target.region().bounds().minX(),
-                target.region().bounds().maxX()
+                interiorMin(target.region().bounds().minX(), target.region().bounds().maxX()),
+                interiorMax(target.region().bounds().minX(), target.region().bounds().maxX())
         );
         int targetZ = MathHelper.clamp(
                 player.getBlockPos().getZ(),
-                target.region().bounds().minZ(),
-                target.region().bounds().maxZ()
+                interiorMin(target.region().bounds().minZ(), target.region().bounds().maxZ()),
+                interiorMax(target.region().bounds().minZ(), target.region().bounds().maxZ())
         );
         return new BlockPos(targetX, player.getBlockPos().getY(), targetZ);
+    }
+
+    private int interiorMin(int min, int max) {
+        return max - min + 1 <= REGION_ENTRY_INSET_BLOCKS * 2 ? min : min + REGION_ENTRY_INSET_BLOCKS;
+    }
+
+    private int interiorMax(int min, int max) {
+        return max - min + 1 <= REGION_ENTRY_INSET_BLOCKS * 2 ? max : max - REGION_ENTRY_INSET_BLOCKS;
     }
 
     public record MovementResult(boolean moving, boolean waitingForChunk, Text pauseMessage, List<BlockPos> path) {
