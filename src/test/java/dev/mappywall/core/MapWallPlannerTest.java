@@ -2,6 +2,8 @@ package dev.mappywall.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.time.Instant;
 import java.util.List;
@@ -94,6 +96,44 @@ class MapWallPlannerTest {
 
         assertEquals(List.of(8, 44), afterSecond.bindings().stream().map(MapBinding::mapId).toList());
         assertEquals(ProjectStatus.COMPLETE, afterSecond.project().status());
+    }
+
+    @Test
+    void fillAfterOpenBindsMapBeforeRunningFillWaypoints() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1",
+                "local",
+                "minecraft:overworld",
+                0,
+                1,
+                1,
+                0,
+                0,
+                RunMode.AUTO_WALK,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.FILL_AFTER_OPEN
+        );
+        MapWallSave save = planner.createSave(project);
+
+        MapWallSave afterOpen = planner.bindCurrentStep(save, 5, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
+
+        assertEquals(List.of(5), afterOpen.bindings().stream().map(MapBinding::mapId).toList());
+        assertEquals(ProjectStatus.RUNNING, afterOpen.project().status());
+        assertEquals(RouteStepState.OPENED, afterOpen.route().getFirst().state());
+        assertNotNull(planner.nextFillStep(afterOpen));
+
+        MapWallSave cursor = afterOpen;
+        int fillWaypointCount = planner.fillWaypointCount(afterOpen.route().getFirst().region());
+        for (int i = 0; i < fillWaypointCount; i++) {
+            cursor = planner.advanceFillWaypoint(cursor);
+        }
+
+        assertEquals(RouteStepState.BOUND, cursor.route().getFirst().state());
+        assertNull(planner.nextFillStep(cursor));
+        assertEquals(ProjectStatus.COMPLETE, cursor.project().status());
     }
 
     @Test

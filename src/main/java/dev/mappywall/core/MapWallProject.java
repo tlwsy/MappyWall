@@ -12,6 +12,7 @@ public record MapWallProject(
         int height,
         MapRegion anchorRegion,
         RunMode mode,
+        PostOpenMode postOpenMode,
         ProjectStatus status,
         Instant createdAt
 ) {
@@ -21,6 +22,9 @@ public record MapWallProject(
         Objects.requireNonNull(dimension, "dimension");
         Objects.requireNonNull(anchorRegion, "anchorRegion");
         Objects.requireNonNull(mode, "mode");
+        if (postOpenMode == null) {
+            postOpenMode = PostOpenMode.OPEN_FIRST;
+        }
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(createdAt, "createdAt");
         MapRegionMath.validateScale(scale);
@@ -32,8 +36,46 @@ public record MapWallProject(
         }
     }
 
+    public MapWallProject(
+            String id,
+            String serverKey,
+            String dimension,
+            int scale,
+            int width,
+            int height,
+            MapRegion anchorRegion,
+            RunMode mode,
+            ProjectStatus status,
+            Instant createdAt
+    ) {
+        this(
+                id,
+                serverKey,
+                dimension,
+                scale,
+                width,
+                height,
+                anchorRegion,
+                mode,
+                PostOpenMode.OPEN_FIRST,
+                status,
+                createdAt
+        );
+    }
+
     public MapWallProject withStatus(ProjectStatus newStatus) {
-        return new MapWallProject(id, serverKey, dimension, scale, width, height, anchorRegion, mode, newStatus, createdAt);
+        return new MapWallProject(
+                id,
+                serverKey,
+                dimension,
+                scale,
+                width,
+                height,
+                anchorRegion,
+                mode,
+                postOpenMode,
+                newStatus,
+                createdAt
+        );
     }
 }
-

@@ -1,5 +1,6 @@
 package dev.mappywall.client;
 
+import dev.mappywall.core.PostOpenMode;
 import dev.mappywall.core.RunMode;
 import dev.mappywall.core.WallAnchorMode;
 import net.minecraft.client.MinecraftClient;
@@ -15,6 +16,7 @@ public final class MapWallConfigScreen extends Screen {
     private int wallWidth = 2;
     private int wallHeight = 2;
     private RunMode mode = RunMode.MANUAL;
+    private PostOpenMode postOpenMode = PostOpenMode.OPEN_FIRST;
     private WallAnchorMode anchorMode = WallAnchorMode.FIRST_REGION;
     private int columnStepX = 1;
     private int rowStepZ = 1;
@@ -30,7 +32,7 @@ public final class MapWallConfigScreen extends Screen {
     @Override
     protected void init() {
         int left = this.width / 2 - 100;
-        int y = Math.max(12, this.height / 2 - 108);
+        int y = Math.max(8, this.height / 2 - 120);
 
         addDrawableChild(ButtonWidget.builder(label("screen.mappywall.scale", scale), button -> {
             scale = (scale + 1) % 5;
@@ -79,31 +81,48 @@ public final class MapWallConfigScreen extends Screen {
             button.setMessage(modeLabel());
         }).dimensions(left, y + 120, 200, 20).build());
 
+        addDrawableChild(ButtonWidget.builder(postOpenLabel(), button -> {
+            postOpenMode = postOpenMode == PostOpenMode.OPEN_FIRST
+                    ? PostOpenMode.FILL_AFTER_OPEN
+                    : PostOpenMode.OPEN_FIRST;
+            button.setMessage(postOpenLabel());
+        }).dimensions(left, y + 144, 200, 20).build());
+
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.start"), button -> {
             wallWidth = readWidthValue();
             wallHeight = readHeightValue();
-            runtime.startRun(MinecraftClient.getInstance(), scale, wallWidth, wallHeight, mode, anchorMode, columnStepX, rowStepZ);
+            runtime.startRun(
+                    MinecraftClient.getInstance(),
+                    scale,
+                    wallWidth,
+                    wallHeight,
+                    mode,
+                    anchorMode,
+                    columnStepX,
+                    rowStepZ,
+                    postOpenMode
+            );
             close();
-        }).dimensions(left, y + 144, 200, 20).build());
+        }).dimensions(left, y + 168, 200, 20).build());
 
         ButtonWidget pauseButton = ButtonWidget.builder(Text.translatable("screen.mappywall.pause_resume"), button ->
                 runtime.togglePause(MinecraftClient.getInstance())
-        ).dimensions(left, y + 168, 200, 20).build();
+        ).dimensions(left, y + 192, 200, 20).build();
         pauseButton.active = runtime.hasActiveProject();
         addDrawableChild(pauseButton);
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
-                .dimensions(left, y + 192, 200, 20)
+                .dimensions(left, y + 216, 200, 20)
                 .build());
     }
 
     @Override
     public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
-        int y = Math.max(12, this.height / 2 - 108);
+        int y = Math.max(8, this.height / 2 - 120);
         graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, y - 18, 0xFFFFFFFF);
         graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_walk_note"), this.width / 2, y + 130, 0xFFAAAAAA);
-        if (this.height >= 250) {
-            graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.scale_note"), this.width / 2, y + 218, 0xFFAAAAAA);
+        if (this.height >= 274) {
+            graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.scale_note"), this.width / 2, y + 242, 0xFFAAAAAA);
         }
         graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.width"), this.width / 2 - 100, y + 30, 0xFFFFFFFF);
         graphics.drawTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.height"), this.width / 2 - 100, y + 54, 0xFFFFFFFF);
@@ -116,6 +135,13 @@ public final class MapWallConfigScreen extends Screen {
 
     private Text modeLabel() {
         return Text.translatable("screen.mappywall.mode").append(": " + mode.name());
+    }
+
+    private Text postOpenLabel() {
+        String key = postOpenMode == PostOpenMode.OPEN_FIRST
+                ? "screen.mappywall.post_open_open_first"
+                : "screen.mappywall.post_open_fill_after_open";
+        return Text.translatable("screen.mappywall.post_open").append(": ").append(Text.translatable(key));
     }
 
     private Text anchorLabel() {

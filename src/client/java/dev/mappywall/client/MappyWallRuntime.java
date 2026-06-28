@@ -10,6 +10,7 @@ import dev.mappywall.core.MapWallProject;
 import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.ObservedMap;
 import dev.mappywall.core.PlayerBlockPos;
+import dev.mappywall.core.PostOpenMode;
 import dev.mappywall.core.ProjectStatus;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RunMode;
@@ -61,7 +62,7 @@ public final class MappyWallRuntime {
     }
 
     public void startRun(MinecraftClient client, int scale, int width, int height, RunMode mode) {
-        startRun(client, scale, width, height, mode, WallAnchorMode.FIRST_REGION, 1, 1);
+        startRun(client, scale, width, height, mode, WallAnchorMode.FIRST_REGION, 1, 1, PostOpenMode.OPEN_FIRST);
     }
 
     public void startRun(
@@ -73,6 +74,20 @@ public final class MappyWallRuntime {
             WallAnchorMode anchorMode,
             int columnStepX,
             int rowStepZ
+    ) {
+        startRun(client, scale, width, height, mode, anchorMode, columnStepX, rowStepZ, PostOpenMode.OPEN_FIRST);
+    }
+
+    public void startRun(
+            MinecraftClient client,
+            int scale,
+            int width,
+            int height,
+            RunMode mode,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ,
+            PostOpenMode postOpenMode
     ) {
         if (!hasUsableWorld(client)) {
             return;
@@ -100,7 +115,8 @@ public final class MappyWallRuntime {
                 mode,
                 anchorMode,
                 columnStepX,
-                rowStepZ
+                rowStepZ,
+                postOpenMode
         );
         activeSave = planner.createSave(project, columnStepX, rowStepZ);
         activePath = persistence.projectPath(context.serverKey(), context.dimension(), id);
@@ -288,9 +304,11 @@ public final class MappyWallRuntime {
             return;
         }
 
-        RouteStep target = planner.nextOpenStep(activeSave);
+        RouteStep fillStep = planner.nextFillStep(activeSave);
+        RouteStep openTarget = fillStep == null ? planner.nextOpenStep(activeSave) : null;
+        RouteStep movementTarget = fillStep == null ? openTarget : planner.fillNavigationStep(activeSave, fillStep);
         if (activeSave.project().mode().isAutomatic()) {
-            MovementController.MovementResult movement = movementController.tick(client, activeSave, target);
+            MovementController.MovementResult movement = movementController.tick(client, activeSave, movementTarget);
             movementPath = movement.path();
             if (movement.shouldPause()) {
                 activeSave = activeSave
@@ -305,9 +323,16 @@ public final class MappyWallRuntime {
             movementPath = List.of();
         }
 
-        if (target != null
-                && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
-            MapOpenController.MapOpenAttempt openAttempt = mapOpenController.tryOpenMapInRegion(client, target);
+        if (fillStep != null && movementTarget != null && reachedFillTarget(client, movementTarget)) {
+            activeSave = planner.advanceFillWaypoint(activeSave);
+            saveNow(client);
+            periodicSave(client);
+            return;
+        }
+
+        if (openTarget != null
+                && openTarget.region().bounds().contains(client.player.getX(), client.player.getZ())) {
+            MapOpenController.MapOpenAttempt openAttempt = mapOpenController.tryOpenMapInRegion(client, openTarget);
             if (openAttempt.openedMapIdOptional().isPresent()) {
                 activeSave = planner.bindCurrentStep(
                         activeSave,
@@ -325,7 +350,9 @@ public final class MappyWallRuntime {
             }
         }
 
-        if (planner.nextOpenStep(activeSave) == null && activeSave.project().status() != ProjectStatus.COMPLETE) {
+        if (planner.nextOpenStep(activeSave) == null
+                && planner.nextFillStep(activeSave) == null
+                && activeSave.project().status() != ProjectStatus.COMPLETE) {
             activeSave = activeSave.withProject(activeSave.project().withStatus(ProjectStatus.COMPLETE));
             saveNow(client);
             showCompletionOrder(client, activeSave);
@@ -342,7 +369,8 @@ public final class MappyWallRuntime {
             return lines;
         }
 
-        RouteStep target = planner.nextOpenStep(activeSave);
+        RouteStep fillStep = planner.nextFillStep(activeSave);
+        RouteStep target = fillStep == null ? planner.nextOpenStep(activeSave) : planner.fillNavigationStep(activeSave, fillStep);
         int completed = activeSave.bindings().size();
         int total = activeSave.route().size();
         lines.add(Text.literal("MappyWall " + completed + "/" + total).formatted(Formatting.AQUA));
@@ -360,7 +388,13 @@ public final class MappyWallRuntime {
             double distance = Math.sqrt(target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()));
             lines.add(Text.literal("Target " + target.targetBlock().x() + ", " + target.targetBlock().z()
                     + " (" + Math.round(distance) + " blocks)"));
-            if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
+            if (fillStep != null) {
+                lines.add(Text.translatable(
+                        "hud.mappywall.fill_waypoint",
+                        activeSave.session().fillWaypointIndex() + 1,
+                        planner.fillWaypointCount(fillStep.region())
+                ).formatted(Formatting.GREEN));
+            } else if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
                 lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
             } else {
                 lines.add(Text.translatable("hud.mappywall.open_anywhere_in_region").formatted(Formatting.GRAY));
@@ -392,7 +426,8 @@ public final class MappyWallRuntime {
             return Optional.empty();
         }
 
-        RouteStep target = planner.nextOpenStep(activeSave);
+        RouteStep fillStep = planner.nextFillStep(activeSave);
+        RouteStep target = fillStep == null ? planner.nextOpenStep(activeSave) : planner.fillNavigationStep(activeSave, fillStep);
         if (target == null) {
             return Optional.empty();
         }
@@ -422,7 +457,8 @@ public final class MappyWallRuntime {
         List<ProjectListItem> items = new ArrayList<>();
         for (PersistenceBridge.LoadedProject loaded : persistence.listProjects(context.serverKey(), context.dimension())) {
             MapWallSave save = loaded.save();
-            RouteStep target = planner.nextOpenStep(save);
+            RouteStep fillStep = planner.nextFillStep(save);
+            RouteStep target = fillStep == null ? planner.nextOpenStep(save) : planner.fillNavigationStep(save, fillStep);
             int completed = save.bindings().size();
             int total = save.route().size();
             boolean active = activeSave != null && activeSave.project().id().equals(save.project().id()) && isActiveContext(client);
@@ -436,6 +472,7 @@ public final class MappyWallRuntime {
                     save.project().width(),
                     save.project().height(),
                     save.project().scale(),
+                    save.project().postOpenMode(),
                     completed,
                     total,
                     targetText,
@@ -453,6 +490,11 @@ public final class MappyWallRuntime {
         return activeSave != null
                 && activeSave.project().status() != ProjectStatus.COMPLETE
                 && activeSave.project().status() != ProjectStatus.STOPPED;
+    }
+
+    private boolean reachedFillTarget(MinecraftClient client, RouteStep target) {
+        return client.player != null
+                && target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()) <= 16.0;
     }
 
     private void repairManualBindings(MinecraftClient client) {
@@ -681,6 +723,7 @@ public final class MappyWallRuntime {
             int width,
             int height,
             int scale,
+            PostOpenMode postOpenMode,
             int completedSteps,
             int totalSteps,
             String targetText,

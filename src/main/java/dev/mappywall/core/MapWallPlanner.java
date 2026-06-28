@@ -29,7 +29,8 @@ public final class MapWallPlanner {
                 mode,
                 WallAnchorMode.FIRST_REGION,
                 1,
-                1
+                1,
+                PostOpenMode.OPEN_FIRST
         );
     }
 
@@ -47,9 +48,44 @@ public final class MapWallPlanner {
             int columnStepX,
             int rowStepZ
     ) {
+        return createProject(
+                id,
+                serverKey,
+                dimension,
+                scale,
+                width,
+                height,
+                playerX,
+                playerZ,
+                mode,
+                anchorMode,
+                columnStepX,
+                rowStepZ,
+                PostOpenMode.OPEN_FIRST
+        );
+    }
+
+    public MapWallProject createProject(
+            String id,
+            String serverKey,
+            String dimension,
+            int scale,
+            int width,
+            int height,
+            double playerX,
+            double playerZ,
+            RunMode mode,
+            WallAnchorMode anchorMode,
+            int columnStepX,
+            int rowStepZ,
+            PostOpenMode postOpenMode
+    ) {
         validateDirectionStep(columnStepX, "columnStepX");
         validateDirectionStep(rowStepZ, "rowStepZ");
         Objects.requireNonNull(anchorMode, "anchorMode");
+        if (postOpenMode == null) {
+            postOpenMode = PostOpenMode.OPEN_FIRST;
+        }
         MapRegion reference = MapRegionMath.regionForBlock(dimension, scale, playerX, playerZ);
         MapRegion anchor = anchorFor(reference, width, height, anchorMode, columnStepX, rowStepZ);
         return new MapWallProject(
@@ -61,6 +97,7 @@ public final class MapWallPlanner {
                 height,
                 anchor,
                 mode,
+                postOpenMode,
                 ProjectStatus.RUNNING,
                 Instant.now()
         );
@@ -129,11 +166,16 @@ public final class MapWallPlanner {
 
         List<RouteStep> route = new ArrayList<>(save.route());
         int nextIndex = route.indexOf(next);
-        route.set(nextIndex, next.withState(RouteStepState.BOUND));
+        RouteStepState nextState = save.project().postOpenMode() == PostOpenMode.FILL_AFTER_OPEN
+                ? RouteStepState.OPENED
+                : RouteStepState.BOUND;
+        route.set(nextIndex, next.withState(nextState));
 
         int following = Math.min(nextIndex + 1, route.size());
-        ProjectStatus status = following >= route.size() ? ProjectStatus.COMPLETE : save.project().status();
-        RunSessionState session = save.session().withCurrentStep(following);
+        ProjectStatus status = nextState == RouteStepState.BOUND && following >= route.size()
+                ? ProjectStatus.COMPLETE
+                : save.project().status();
+        RunSessionState session = save.session().withCurrentStep(following).withFillWaypointIndex(0);
         return new MapWallSave(
                 MapWallSave.CURRENT_SCHEMA_VERSION,
                 save.project().withStatus(status),
@@ -143,6 +185,60 @@ public final class MapWallPlanner {
         );
     }
 
+    public RouteStep nextFillStep(MapWallSave save) {
+        if (save.project().postOpenMode() != PostOpenMode.FILL_AFTER_OPEN) {
+            return null;
+        }
+        for (RouteStep step : save.route()) {
+            if (step.state() == RouteStepState.OPENED && hasBinding(save, step.region().signature())) {
+                return step;
+            }
+        }
+        return null;
+    }
+
+    public RouteStep fillNavigationStep(MapWallSave save, RouteStep step) {
+        List<BlockTarget> targets = fillTargets(step.region());
+        BlockTarget target = targets.get(Math.min(
+                save.session().fillWaypointIndex(),
+                targets.size() - 1
+        ));
+        return new RouteStep(step.wallPos(), step.region(), target, RouteStepState.OPENED);
+    }
+
+    public MapWallSave advanceFillWaypoint(MapWallSave save) {
+        RouteStep fillStep = nextFillStep(save);
+        if (fillStep == null) {
+            return save;
+        }
+
+        List<BlockTarget> targets = fillTargets(fillStep.region());
+        int nextWaypoint = save.session().fillWaypointIndex() + 1;
+        if (nextWaypoint < targets.size()) {
+            return save.withSession(save.session().withFillWaypointIndex(nextWaypoint));
+        }
+
+        List<RouteStep> route = new ArrayList<>(save.route());
+        int stepIndex = route.indexOf(fillStep);
+        route.set(stepIndex, fillStep.withState(RouteStepState.BOUND));
+        RunSessionState session = save.session().withFillWaypointIndex(0);
+        MapWallSave updated = new MapWallSave(
+                MapWallSave.CURRENT_SCHEMA_VERSION,
+                save.project(),
+                route,
+                save.bindings(),
+                session
+        );
+        if (nextOpenStep(updated) == null && nextFillStep(updated) == null) {
+            updated = updated.withProject(updated.project().withStatus(ProjectStatus.COMPLETE));
+        }
+        return updated;
+    }
+
+    public int fillWaypointCount(MapRegion region) {
+        return fillTargets(region).size();
+    }
+
     private boolean hasBinding(MapWallSave save, String regionSignature) {
         for (MapBinding binding : save.bindings()) {
             if (binding.regionSignature().equals(regionSignature)) {
@@ -150,6 +246,27 @@ public final class MapWallPlanner {
             }
         }
         return false;
+    }
+
+    private List<BlockTarget> fillTargets(MapRegion region) {
+        MapBounds bounds = region.bounds();
+        int width = bounds.maxX() - bounds.minX() + 1;
+        int depth = bounds.maxZ() - bounds.minZ() + 1;
+        int marginX = Math.max(8, Math.min(64, width / 4));
+        int marginZ = Math.max(8, Math.min(64, depth / 4));
+        int west = bounds.minX() + marginX;
+        int east = bounds.maxX() - marginX;
+        int north = bounds.minZ() + marginZ;
+        int south = bounds.maxZ() - marginZ;
+
+        return List.of(
+                new BlockTarget(region.centerX(), region.centerZ()),
+                new BlockTarget(west, north),
+                new BlockTarget(east, north),
+                new BlockTarget(east, south),
+                new BlockTarget(west, south),
+                new BlockTarget(region.centerX(), region.centerZ())
+        );
     }
 
     private MapRegion anchorFor(

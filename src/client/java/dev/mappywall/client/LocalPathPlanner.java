@@ -1,6 +1,7 @@
 package dev.mappywall.client;
 
 import dev.mappywall.core.RouteStep;
+import dev.mappywall.core.RouteStepState;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -21,7 +22,7 @@ public final class LocalPathPlanner {
     private static final int MAX_NODES = 3000;
     private static final int MAX_HORIZONTAL_RANGE = 36;
     private static final int MAX_VERTICAL_RANGE = 10;
-    private static final int MAX_DROP = 5;
+    private static final int MAX_DROP = 3;
     private static final int REACHED_TARGET_RADIUS = 3;
 
     private static final int[][] DIRECTIONS = {
@@ -184,12 +185,15 @@ public final class LocalPathPlanner {
         if (!config.allowsBreak(blockId)) {
             return;
         }
+        if (heuristic(pos, target) > current.heuristic + 1.0) {
+            return;
+        }
 
         BlockPos simulated = pos;
         if (!standableIfBroken(world, simulated, block) && !swimmable(world, simulated)) {
             return;
         }
-        double cost = current.cost + 18.0 + diagonalCost(dx, dz) + heuristic(simulated, target) * 0.02;
+        double cost = current.cost + 80.0 + diagonalCost(dx, dz) + heuristic(simulated, target) * 0.05;
         result.add(new SearchNode(simulated, current, StepAction.BREAK, block, cost, heuristic(simulated, target)));
     }
 
@@ -229,6 +233,9 @@ public final class LocalPathPlanner {
             BlockPos block = obstacle.get();
             String blockId = world.cell(block).blockId();
             if (!config.allowsBreak(blockId)) {
+                continue;
+            }
+            if (heuristic(pos, target) >= heuristic(start, target)) {
                 continue;
             }
             double score = heuristic(pos, target) + diagonalCost(direction[0], direction[1]);
@@ -313,6 +320,10 @@ public final class LocalPathPlanner {
         if (world.cell(pos).water()) {
             return 4.0;
         }
+        String blockId = world.cell(pos).blockId();
+        if (blockId.contains("vine") || blockId.equals("minecraft:weeping_vines") || blockId.equals("minecraft:twisting_vines")) {
+            return 12.0;
+        }
         return 0.0;
     }
 
@@ -347,6 +358,9 @@ public final class LocalPathPlanner {
     }
 
     private boolean reached(BlockPos pos, RouteStep routeStep, BlockPos target) {
+        if (routeStep.state() == RouteStepState.OPENED) {
+            return MathHelper.floor(Math.sqrt(pos.getSquaredDistance(target))) <= REACHED_TARGET_RADIUS;
+        }
         if (routeStep.region().bounds().contains(pos.getX(), pos.getZ())) {
             return true;
         }
@@ -354,6 +368,9 @@ public final class LocalPathPlanner {
     }
 
     private BlockPos nearestRegionTarget(BlockPos start, RouteStep routeStep) {
+        if (routeStep.state() == RouteStepState.OPENED) {
+            return new BlockPos(routeStep.targetBlock().x(), start.getY(), routeStep.targetBlock().z());
+        }
         int targetX = MathHelper.clamp(start.getX(), routeStep.region().bounds().minX(), routeStep.region().bounds().maxX());
         int targetZ = MathHelper.clamp(start.getZ(), routeStep.region().bounds().minZ(), routeStep.region().bounds().maxZ());
         return new BlockPos(targetX, start.getY(), targetZ);
@@ -432,7 +449,9 @@ public final class LocalPathPlanner {
                             continue;
                         }
 
-                        String blockId = passable ? "minecraft:air" : Registries.BLOCK.getId(state.getBlock()).toString();
+                        String blockId = state.isAir()
+                                ? "minecraft:air"
+                                : Registries.BLOCK.getId(state.getBlock()).toString();
                         cells.put(mutable.asLong(), new Cell(passable, replaceable, water, lava, blockId));
                     }
                 }

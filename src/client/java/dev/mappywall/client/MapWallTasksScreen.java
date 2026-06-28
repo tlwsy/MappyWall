@@ -102,6 +102,7 @@ public final class MapWallTasksScreen extends Screen {
             Text headline = Text.literal(shortId(task.id()) + "  "
                     + task.width() + "x" + task.height()
                     + " S" + task.scale()
+                    + "  " + task.postOpenMode().name()
                     + "  " + task.completedSteps() + "/" + task.totalSteps()
                     + "  " + task.status().name());
             if (task.active()) {

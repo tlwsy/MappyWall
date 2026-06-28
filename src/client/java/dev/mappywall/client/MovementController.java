@@ -2,6 +2,7 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.RouteStep;
+import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.RunMode;
 import java.util.ArrayList;
 import java.util.concurrent.CancellationException;
@@ -31,7 +32,10 @@ import net.minecraft.util.math.Vec3d;
 public final class MovementController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
     private static final double ARRIVAL_DISTANCE_BLOCKS = 4.0;
-    private static final double WAYPOINT_DISTANCE_BLOCKS = 1.75;
+    private static final double WAYPOINT_DISTANCE_BLOCKS = 1.25;
+    private static final float MOVE_ALIGNMENT_DEGREES = 75.0F;
+    private static final float SPRINT_ALIGNMENT_DEGREES = 35.0F;
+    private static final float MOVEMENT_TURN_DEGREES = 12.0F;
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
@@ -67,6 +71,7 @@ public final class MovementController {
     private String pendingPlanSignature;
     private boolean movementKeysHeld;
     private boolean useKeyHeld;
+    private boolean attackKeyHeld;
 
     public MovementResult tick(MinecraftClient client, MapWallSave save, RouteStep target) {
         if (client.world == null || client.player == null || target == null) {
@@ -82,7 +87,7 @@ public final class MovementController {
         }
 
         ClientPlayerEntity player = client.player;
-        if (target.region().bounds().contains(player.getX(), player.getZ())) {
+        if (arrivedAtNavigationTarget(player, target)) {
             release(client);
             resetProgress();
             return MovementResult.none();
@@ -113,19 +118,20 @@ public final class MovementController {
     }
 
     public void release(MinecraftClient client) {
-        if (client.options == null || (!movementKeysHeld && !useKeyHeld)) {
-            return;
+        if (client.options != null) {
+            client.options.forwardKey.setPressed(false);
+            client.options.backKey.setPressed(false);
+            client.options.leftKey.setPressed(false);
+            client.options.rightKey.setPressed(false);
+            client.options.jumpKey.setPressed(false);
+            client.options.sneakKey.setPressed(false);
+            client.options.sprintKey.setPressed(false);
+            client.options.useKey.setPressed(false);
+            client.options.attackKey.setPressed(false);
         }
-        client.options.forwardKey.setPressed(false);
-        client.options.backKey.setPressed(false);
-        client.options.leftKey.setPressed(false);
-        client.options.rightKey.setPressed(false);
-        client.options.jumpKey.setPressed(false);
-        client.options.sneakKey.setPressed(false);
-        client.options.sprintKey.setPressed(false);
-        client.options.useKey.setPressed(false);
         movementKeysHeld = false;
         useKeyHeld = false;
+        attackKeyHeld = false;
         breakingBlock = null;
         cancelPendingPlan();
     }
@@ -162,8 +168,8 @@ public final class MovementController {
 
     private MovementResult dropToward(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
         double drop = player.getY() - waypoint.pos().getY();
-        boolean careful = drop >= 3.75;
-        return moveToward(client, player, waypoint, false, careful, !careful);
+        boolean sprint = drop < 3.75;
+        return moveToward(client, player, waypoint, false, false, sprint);
     }
 
     private MovementResult moveToward(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint, boolean jump) {
@@ -181,30 +187,23 @@ public final class MovementController {
         BlockPos pos = waypoint.pos();
         double targetX = pos.getX() + 0.5;
         double targetZ = pos.getZ() + 0.5;
-        faceMovement(player, targetX - player.getX(), targetZ - player.getZ());
-        setMovementKeys(client, true, false, false, false, jump, sneak, sprint);
+        float yawError = faceMovement(player, targetX - player.getX(), targetZ - player.getZ());
+        boolean aligned = yawError <= MOVE_ALIGNMENT_DEGREES;
+        boolean sprinting = sprint && yawError <= SPRINT_ALIGNMENT_DEGREES;
+        setMovementKeys(client, aligned, false, false, false, aligned && jump, sneak, sprinting);
         return MovementResult.active(pathSnapshot());
     }
 
     private MovementResult recoverTowardTarget(MinecraftClient client, ClientPlayerEntity player, RouteStep target) {
         BlockPos navigationTarget = navigationTarget(player, target);
-        faceMovement(
+        float yawError = faceMovement(
                 player,
                 navigationTarget.getX() + 0.5 - player.getX(),
                 navigationTarget.getZ() + 0.5 - player.getZ()
         );
 
-        BlockPos obstacle = breakableObstacleAhead(client, player);
-        if (obstacle != null) {
-            LocalPathPlanner.PathStep breakStep = new LocalPathPlanner.PathStep(
-                    player.getBlockPos(),
-                    LocalPathPlanner.StepAction.BREAK,
-                    obstacle
-            );
-            return breakBlock(client, player, breakStep);
-        }
-
-        setMovementKeys(client, true, false, false, false, true, false, true);
+        boolean aligned = yawError <= MOVE_ALIGNMENT_DEGREES;
+        setMovementKeys(client, aligned, false, false, false, aligned, false, aligned);
         return MovementResult.active(List.of(navigationTarget));
     }
 
@@ -223,6 +222,7 @@ public final class MovementController {
         BlockPos block = waypoint.actionBlock();
         if (client.world.getBlockState(block).getCollisionShape(client.world, block).isEmpty()) {
             breakingBlock = null;
+            releaseAttackKey(client);
             pathIndex++;
             replanCooldown = 0;
             return MovementResult.active(pathSnapshot());
@@ -230,6 +230,7 @@ public final class MovementController {
 
         releaseMovementKeys(client);
         faceBlock(player, block);
+        setAttackKey(client, true);
         Direction side = Direction.getFacing(
                 player.getX() - (block.getX() + 0.5),
                 player.getEyeY() - (block.getY() + 0.5),
@@ -246,6 +247,7 @@ public final class MovementController {
     }
 
     private MovementResult placeBlock(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
+        releaseAttackKey(client);
         if (client.interactionManager == null || waypoint.actionBlock() == null || placeCooldown > 0) {
             return MovementResult.active(pathSnapshot());
         }
@@ -291,6 +293,7 @@ public final class MovementController {
         if (player.getHungerManager().getFoodLevel() > config.eatAtFoodLevel()) {
             return false;
         }
+        releaseAttackKey(client);
 
         if (player.isUsingItem()) {
             pressUse(client, true);
@@ -586,6 +589,7 @@ public final class MovementController {
         if (client.options == null) {
             return;
         }
+        releaseAttackKey(client);
         client.options.forwardKey.setPressed(forward);
         client.options.backKey.setPressed(back);
         client.options.leftKey.setPressed(left);
@@ -610,6 +614,22 @@ public final class MovementController {
         movementKeysHeld = false;
     }
 
+    private void setAttackKey(MinecraftClient client, boolean pressed) {
+        if (client.options == null) {
+            return;
+        }
+        client.options.attackKey.setPressed(pressed);
+        attackKeyHeld = pressed;
+    }
+
+    private void releaseAttackKey(MinecraftClient client) {
+        if (client.options == null || !attackKeyHeld) {
+            return;
+        }
+        client.options.attackKey.setPressed(false);
+        attackKeyHeld = false;
+    }
+
     private void pressUse(MinecraftClient client, boolean pressed) {
         if (client.options == null) {
             return;
@@ -618,12 +638,14 @@ public final class MovementController {
         useKeyHeld = pressed;
     }
 
-    private void faceMovement(ClientPlayerEntity player, double dx, double dz) {
+    private float faceMovement(ClientPlayerEntity player, double dx, double dz) {
         if (dx * dx + dz * dz <= 0.0001) {
-            return;
+            return 0.0F;
         }
         float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-        player.setYaw(targetYaw);
+        float yawDelta = MathHelper.wrapDegrees(targetYaw - player.getYaw());
+        player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -MOVEMENT_TURN_DEGREES, MOVEMENT_TURN_DEGREES));
+        return Math.abs(yawDelta);
     }
 
     private void faceBlock(ClientPlayerEntity player, BlockPos block) {
@@ -680,6 +702,14 @@ public final class MovementController {
         cancelPendingPlan();
     }
 
+    private boolean arrivedAtNavigationTarget(ClientPlayerEntity player, RouteStep target) {
+        if (target.state() == RouteStepState.OPENED) {
+            return target.targetBlock().distanceSquaredTo(player.getX(), player.getZ())
+                    <= ARRIVAL_DISTANCE_BLOCKS * ARRIVAL_DISTANCE_BLOCKS;
+        }
+        return target.region().bounds().contains(player.getX(), player.getZ());
+    }
+
     private void cancelPendingPlan() {
         if (pendingPlan != null && !pendingPlan.isDone()) {
             pendingPlan.cancel(true);
@@ -689,6 +719,9 @@ public final class MovementController {
     }
 
     private BlockPos navigationTarget(ClientPlayerEntity player, RouteStep target) {
+        if (target.state() == RouteStepState.OPENED) {
+            return new BlockPos(target.targetBlock().x(), player.getBlockPos().getY(), target.targetBlock().z());
+        }
         int targetX = MathHelper.clamp(
                 player.getBlockPos().getX(),
                 target.region().bounds().minX(),
