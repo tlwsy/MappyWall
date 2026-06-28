@@ -18,9 +18,9 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.World;
 
 public final class LocalPathPlanner {
-    private static final int MAX_NODES = 7200;
-    private static final int MAX_HORIZONTAL_RANGE = 96;
-    private static final int MAX_VERTICAL_RANGE = 24;
+    private static final int MAX_NODES = 3000;
+    private static final int MAX_HORIZONTAL_RANGE = 36;
+    private static final int MAX_VERTICAL_RANGE = 10;
     private static final int MAX_DROP = 5;
     private static final int REACHED_TARGET_RADIUS = 3;
 
@@ -36,8 +36,11 @@ public final class LocalPathPlanner {
     };
 
     public PathPlan plan(ClientPlayerEntity player, RouteStep routeStep, AutoNavigationConfig config) {
-        World world = player.getEntityWorld();
-        BlockPos start = stableFeetPos(world, player.getBlockPos());
+        return plan(NavigationSnapshot.capture(player), routeStep, config);
+    }
+
+    public PathPlan plan(NavigationSnapshot snapshot, RouteStep routeStep, AutoNavigationConfig config) {
+        BlockPos start = stableFeetPos(snapshot, snapshot.start());
         BlockPos target = nearestRegionTarget(start, routeStep);
         SearchNode startNode = new SearchNode(start, null, StepAction.WALK, null, 0.0, heuristic(start, target));
         PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingDouble(SearchNode::score));
@@ -48,6 +51,9 @@ public final class LocalPathPlanner {
         SearchNode best = startNode;
         int visited = 0;
         while (!open.isEmpty() && visited++ < MAX_NODES) {
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
             SearchNode current = open.poll();
             if (current.heuristic < best.heuristic) {
                 best = current;
@@ -56,7 +62,7 @@ public final class LocalPathPlanner {
                 return new PathPlan(toSteps(current), current.pos, true);
             }
 
-            for (SearchNode next : neighbors(world, current, start, target, config)) {
+            for (SearchNode next : neighbors(snapshot, current, start, target, config)) {
                 Double known = bestCost.get(next.pos);
                 if (known != null && known <= next.cost) {
                     continue;
@@ -68,7 +74,7 @@ public final class LocalPathPlanner {
 
         List<PathStep> bestPath = toSteps(best);
         if (bestPath.isEmpty()) {
-            Optional<PathStep> immediateBreak = immediateBreakStep(world, start, target, config);
+            Optional<PathStep> immediateBreak = immediateBreakStep(snapshot, start, target, config);
             if (immediateBreak.isPresent()) {
                 return new PathPlan(List.of(immediateBreak.get()), start, false);
             }
@@ -92,7 +98,7 @@ public final class LocalPathPlanner {
     }
 
     private List<SearchNode> neighbors(
-            World world,
+            NavigationSnapshot world,
             SearchNode current,
             BlockPos start,
             BlockPos target,
@@ -132,7 +138,7 @@ public final class LocalPathPlanner {
     }
 
     private void addMove(
-            World world,
+            NavigationSnapshot world,
             List<SearchNode> result,
             SearchNode current,
             BlockPos target,
@@ -157,7 +163,7 @@ public final class LocalPathPlanner {
     }
 
     private void addBreakMove(
-            World world,
+            NavigationSnapshot world,
             List<SearchNode> result,
             SearchNode current,
             BlockPos target,
@@ -174,7 +180,7 @@ public final class LocalPathPlanner {
             return;
         }
         BlockPos block = obstacle.get();
-        String blockId = Registries.BLOCK.getId(world.getBlockState(block).getBlock()).toString();
+        String blockId = world.cell(block).blockId();
         if (!config.allowsBreak(blockId)) {
             return;
         }
@@ -188,7 +194,7 @@ public final class LocalPathPlanner {
     }
 
     private void addPlaceMove(
-            World world,
+            NavigationSnapshot world,
             List<SearchNode> result,
             SearchNode current,
             BlockPos target,
@@ -207,7 +213,7 @@ public final class LocalPathPlanner {
     }
 
     private Optional<PathStep> immediateBreakStep(
-            World world,
+            NavigationSnapshot world,
             BlockPos start,
             BlockPos target,
             AutoNavigationConfig config
@@ -221,7 +227,7 @@ public final class LocalPathPlanner {
                 continue;
             }
             BlockPos block = obstacle.get();
-            String blockId = Registries.BLOCK.getId(world.getBlockState(block).getBlock()).toString();
+            String blockId = world.cell(block).blockId();
             if (!config.allowsBreak(blockId)) {
                 continue;
             }
@@ -234,57 +240,57 @@ public final class LocalPathPlanner {
         return Optional.ofNullable(best);
     }
 
-    private boolean standable(World world, BlockPos feet) {
+    private boolean standable(NavigationSnapshot world, BlockPos feet) {
         return isPassable(world, feet)
                 && isPassable(world, feet.up())
                 && hasSupport(world, feet.down());
     }
 
-    private boolean standableIfBroken(World world, BlockPos feet, BlockPos brokenBlock) {
+    private boolean standableIfBroken(NavigationSnapshot world, BlockPos feet, BlockPos brokenBlock) {
         return isPassableIfBroken(world, feet, brokenBlock)
                 && isPassableIfBroken(world, feet.up(), brokenBlock)
                 && hasSupport(world, feet.down());
     }
 
-    private boolean swimmable(World world, BlockPos feet) {
+    private boolean swimmable(NavigationSnapshot world, BlockPos feet) {
         return !isDangerous(world, feet)
-                && world.getFluidState(feet).isIn(FluidTags.WATER)
+                && world.cell(feet).water()
                 && isPassable(world, feet.up());
     }
 
-    private boolean isPassable(World world, BlockPos pos) {
-        if (!withinWorld(world, pos) || world.getFluidState(pos).isIn(FluidTags.LAVA)) {
+    private boolean isPassable(NavigationSnapshot world, BlockPos pos) {
+        if (!withinWorld(world, pos) || world.cell(pos).lava()) {
             return false;
         }
-        return world.getBlockState(pos).getCollisionShape(world, pos).isEmpty();
+        return world.cell(pos).passable();
     }
 
-    private boolean isPassableIfBroken(World world, BlockPos pos, BlockPos brokenBlock) {
+    private boolean isPassableIfBroken(NavigationSnapshot world, BlockPos pos, BlockPos brokenBlock) {
         return pos.equals(brokenBlock) || isPassable(world, pos);
     }
 
-    private boolean hasSupport(World world, BlockPos pos) {
+    private boolean hasSupport(NavigationSnapshot world, BlockPos pos) {
         if (!withinWorld(world, pos)) {
             return false;
         }
-        if (world.getFluidState(pos.up()).isIn(FluidTags.WATER)) {
+        if (world.cell(pos.up()).water()) {
             return true;
         }
-        return !world.getBlockState(pos).getCollisionShape(world, pos).isEmpty();
+        return !world.cell(pos).passable();
     }
 
-    private boolean isReplaceable(World world, BlockPos pos) {
+    private boolean isReplaceable(NavigationSnapshot world, BlockPos pos) {
         return withinWorld(world, pos)
-                && !world.getFluidState(pos).isIn(FluidTags.LAVA)
-                && world.getBlockState(pos).isReplaceable();
+                && !world.cell(pos).lava()
+                && world.cell(pos).replaceable();
     }
 
-    private boolean isDangerous(World world, BlockPos pos) {
-        return world.getFluidState(pos).isIn(FluidTags.LAVA)
-                || world.getFluidState(pos.up()).isIn(FluidTags.LAVA);
+    private boolean isDangerous(NavigationSnapshot world, BlockPos pos) {
+        return world.cell(pos).lava()
+                || world.cell(pos.up()).lava();
     }
 
-    private Optional<BlockPos> firstObstacle(World world, BlockPos feet) {
+    private Optional<BlockPos> firstObstacle(NavigationSnapshot world, BlockPos feet) {
         if (!isPassable(world, feet)) {
             return Optional.of(feet);
         }
@@ -294,17 +300,17 @@ public final class LocalPathPlanner {
         return Optional.empty();
     }
 
-    private boolean headClearForJump(World world, BlockPos currentFeet) {
+    private boolean headClearForJump(NavigationSnapshot world, BlockPos currentFeet) {
         return isPassable(world, currentFeet.up(2));
     }
 
-    private boolean clipsDiagonal(World world, BlockPos current, int dx, int dz) {
+    private boolean clipsDiagonal(NavigationSnapshot world, BlockPos current, int dx, int dz) {
         return !isPassable(world, current.add(dx, 0, 0))
                 || !isPassable(world, current.add(0, 0, dz));
     }
 
-    private double terrainCost(World world, BlockPos pos) {
-        if (world.getFluidState(pos).isIn(FluidTags.WATER)) {
+    private double terrainCost(NavigationSnapshot world, BlockPos pos) {
+        if (world.cell(pos).water()) {
             return 4.0;
         }
         return 0.0;
@@ -316,11 +322,11 @@ public final class LocalPathPlanner {
                 && Math.abs(pos.getY() - start.getY()) <= MAX_VERTICAL_RANGE;
     }
 
-    private boolean withinWorld(World world, BlockPos pos) {
+    private boolean withinWorld(NavigationSnapshot world, BlockPos pos) {
         return pos.getY() >= world.getBottomY() && pos.getY() <= world.getTopYInclusive();
     }
 
-    private BlockPos stableFeetPos(World world, BlockPos pos) {
+    private BlockPos stableFeetPos(NavigationSnapshot world, BlockPos pos) {
         BlockPos feet = pos;
         if (standable(world, feet) || swimmable(world, feet)) {
             return feet;
@@ -384,6 +390,90 @@ public final class LocalPathPlanner {
     }
 
     public record PathStep(BlockPos pos, StepAction action, BlockPos actionBlock) {
+    }
+
+    public record NavigationSnapshot(
+            BlockPos start,
+            int minX,
+            int maxX,
+            int minY,
+            int maxY,
+            int minZ,
+            int maxZ,
+            int bottomY,
+            int topYInclusive,
+            Map<Long, Cell> cells
+    ) {
+        private static final Cell DEFAULT_AIR = new Cell(true, true, false, false, "minecraft:air");
+        private static final Cell OUT_OF_RANGE = new Cell(false, false, false, false, "minecraft:bedrock");
+
+        static NavigationSnapshot capture(ClientPlayerEntity player) {
+            World world = player.getEntityWorld();
+            BlockPos start = player.getBlockPos();
+            int minX = start.getX() - MAX_HORIZONTAL_RANGE;
+            int maxX = start.getX() + MAX_HORIZONTAL_RANGE;
+            int minZ = start.getZ() - MAX_HORIZONTAL_RANGE;
+            int maxZ = start.getZ() + MAX_HORIZONTAL_RANGE;
+            int minY = Math.max(world.getBottomY(), start.getY() - MAX_VERTICAL_RANGE - MAX_DROP - 2);
+            int maxY = Math.min(world.getTopYInclusive(), start.getY() + MAX_VERTICAL_RANGE + 2);
+            Map<Long, Cell> cells = new HashMap<>();
+            BlockPos.Mutable mutable = new BlockPos.Mutable();
+
+            for (int x = minX; x <= maxX; x++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    for (int y = minY; y <= maxY; y++) {
+                        mutable.set(x, y, z);
+                        BlockState state = world.getBlockState(mutable);
+                        boolean water = world.getFluidState(mutable).isIn(FluidTags.WATER);
+                        boolean lava = world.getFluidState(mutable).isIn(FluidTags.LAVA);
+                        boolean passable = state.getCollisionShape(world, mutable).isEmpty();
+                        boolean replaceable = state.isReplaceable();
+                        if (passable && replaceable && !water && !lava) {
+                            continue;
+                        }
+
+                        String blockId = passable ? "minecraft:air" : Registries.BLOCK.getId(state.getBlock()).toString();
+                        cells.put(mutable.asLong(), new Cell(passable, replaceable, water, lava, blockId));
+                    }
+                }
+            }
+
+            return new NavigationSnapshot(
+                    start,
+                    minX,
+                    maxX,
+                    minY,
+                    maxY,
+                    minZ,
+                    maxZ,
+                    world.getBottomY(),
+                    world.getTopYInclusive(),
+                    Map.copyOf(cells)
+            );
+        }
+
+        Cell cell(BlockPos pos) {
+            if (pos.getX() < minX
+                    || pos.getX() > maxX
+                    || pos.getY() < minY
+                    || pos.getY() > maxY
+                    || pos.getZ() < minZ
+                    || pos.getZ() > maxZ) {
+                return OUT_OF_RANGE;
+            }
+            return cells.getOrDefault(pos.asLong(), DEFAULT_AIR);
+        }
+
+        int getBottomY() {
+            return bottomY;
+        }
+
+        int getTopYInclusive() {
+            return topYInclusive;
+        }
+    }
+
+    private record Cell(boolean passable, boolean replaceable, boolean water, boolean lava, String blockId) {
     }
 
     public enum StepAction {

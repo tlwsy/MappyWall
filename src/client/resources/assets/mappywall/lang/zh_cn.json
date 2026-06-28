@@ -46,6 +46,7 @@
   "hud.mappywall.scale_empty_maps_open_as_zero": "将自动开 0 级地图，之后请自行合成到目标比例尺",
   "hud.mappywall.auto_walk_active": "自动走路已开启，按 K 急停",
   "hud.mappywall.waiting_for_chunk": "等待前方区块加载",
+  "hud.mappywall.planning_path": "正在后台计算路径",
   "message.mappywall.started": "MappyWall 手动跑图已开始。",
   "message.mappywall.paused": "MappyWall 跑图已暂停。",
   "message.mappywall.resumed": "MappyWall 跑图已继续。",

@@ -25,6 +25,7 @@ Inventory operations are conservative and re-check client state before continuin
 ## Stage 4 automatic walking
 
 - Route planning is local and incremental: for each target map region, the navigator aims for the nearest reachable point inside the region rather than forcing the player to stand on the map center.
+- Path searches run on a dedicated daemon thread. The client thread only captures a bounded terrain snapshot and later applies completed path results, so expensive A* work does not block rendering or normal game ticks.
 - The controller sprints by default, follows the local path, and replans periodically or when progress stalls.
 - Stuck recovery no longer immediately pauses the task. It turns toward the local target, jumps, attempts to break an allowed obstacle directly ahead, and keeps replanning.
 - The path planner supports walking, one-block jumps, controlled drops, swimming/water traversal, allowed block breaking, and allowed block placement using the default cobblestone/dirt whitelist.

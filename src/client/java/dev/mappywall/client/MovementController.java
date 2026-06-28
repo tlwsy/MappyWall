@@ -4,6 +4,11 @@ import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RunMode;
 import java.util.ArrayList;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.List;
 import net.minecraft.block.BlockState;
 import net.minecraft.component.DataComponentTypes;
@@ -30,11 +35,16 @@ public final class MovementController {
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
-    private static final int REPLAN_INTERVAL_TICKS = 32;
+    private static final int REPLAN_INTERVAL_TICKS = 50;
     private static final int RECOVERY_TICKS = 35;
     private static final int PLACE_COOLDOWN_TICKS = 8;
     private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
+    private static final ExecutorService PATH_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "MappyWall Path Planner");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private final AutoNavigationConfig config = AutoNavigationConfig.defaults();
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
@@ -53,6 +63,8 @@ public final class MovementController {
     private String targetSignature;
     private BlockPos breakingBlock;
     private int recoveryTicks;
+    private Future<LocalPathPlanner.PathPlan> pendingPlan;
+    private String pendingPlanSignature;
     private boolean movementKeysHeld;
     private boolean useKeyHeld;
 
@@ -82,15 +94,12 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
 
+        acceptCompletedPlan(target);
         if (needsNewPath(target)) {
-            replan(client, target);
+            requestReplan(client, target);
         }
 
         LocalPathPlanner.PathStep waypoint = nextWaypoint(player);
-        if (waypoint == null) {
-            replan(client, target);
-            waypoint = nextWaypoint(player);
-        }
         if (waypoint == null) {
             failedReplans++;
             recoveryTicks = RECOVERY_TICKS;
@@ -118,10 +127,15 @@ public final class MovementController {
         movementKeysHeld = false;
         useKeyHeld = false;
         breakingBlock = null;
+        cancelPendingPlan();
     }
 
     public boolean isWaitingForChunk() {
         return false;
+    }
+
+    public boolean isPlanningPath() {
+        return pendingPlan != null && !pendingPlan.isDone();
     }
 
     public List<BlockPos> pathSnapshot() {
@@ -328,25 +342,67 @@ public final class MovementController {
         return true;
     }
 
-    private void replan(MinecraftClient client, RouteStep target) {
+    private void requestReplan(MinecraftClient client, RouteStep target) {
         if (client.player == null) {
             path = List.of();
             return;
         }
-        LocalPathPlanner.PathPlan plan = pathPlanner.plan(client.player, target, config);
-        path = plan.steps();
-        pathIndex = 0;
+
+        String signature = target.region().signature();
+        if (pendingPlan != null && !pendingPlan.isDone()) {
+            if (signature.equals(pendingPlanSignature)) {
+                return;
+            }
+            pendingPlan.cancel(true);
+        }
+
+        LocalPathPlanner.NavigationSnapshot snapshot = LocalPathPlanner.NavigationSnapshot.capture(client.player);
+        pendingPlanSignature = signature;
+        pendingPlan = PATH_EXECUTOR.submit(() -> pathPlanner.plan(snapshot, target, config));
         replanCooldown = REPLAN_INTERVAL_TICKS;
-        targetSignature = target.region().signature();
-        breakingBlock = null;
+        targetSignature = signature;
     }
 
     private boolean needsNewPath(RouteStep target) {
         replanCooldown--;
+        if (!target.region().signature().equals(targetSignature)) {
+            return true;
+        }
+        if (pendingPlan != null && !pendingPlan.isDone()) {
+            return false;
+        }
         return path.isEmpty()
-                || pathIndex >= path.size()
+                ? replanCooldown <= 0
+                : pathIndex >= path.size()
                 || replanCooldown <= 0
                 || !target.region().signature().equals(targetSignature);
+    }
+
+    private void acceptCompletedPlan(RouteStep target) {
+        if (pendingPlan == null || !pendingPlan.isDone()) {
+            return;
+        }
+
+        try {
+            LocalPathPlanner.PathPlan plan = pendingPlan.get();
+            if (target.region().signature().equals(pendingPlanSignature)) {
+                path = plan.steps();
+                pathIndex = 0;
+                replanCooldown = REPLAN_INTERVAL_TICKS;
+                targetSignature = pendingPlanSignature;
+                breakingBlock = null;
+            }
+        } catch (CancellationException | ExecutionException exception) {
+            path = List.of();
+            pathIndex = 0;
+            replanCooldown = Math.max(replanCooldown, 20);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            replanCooldown = Math.max(replanCooldown, 20);
+        } finally {
+            pendingPlan = null;
+            pendingPlanSignature = null;
+        }
     }
 
     private LocalPathPlanner.PathStep nextWaypoint(ClientPlayerEntity player) {
@@ -621,6 +677,15 @@ public final class MovementController {
         targetSignature = null;
         breakingBlock = null;
         recoveryTicks = 0;
+        cancelPendingPlan();
+    }
+
+    private void cancelPendingPlan() {
+        if (pendingPlan != null && !pendingPlan.isDone()) {
+            pendingPlan.cancel(true);
+        }
+        pendingPlan = null;
+        pendingPlanSignature = null;
     }
 
     private BlockPos navigationTarget(ClientPlayerEntity player, RouteStep target) {

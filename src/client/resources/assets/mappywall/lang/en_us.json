@@ -46,6 +46,7 @@
   "hud.mappywall.scale_empty_maps_open_as_zero": "MappyWall will open a scale 0 map; craft/zoom it to the target scale afterward",
   "hud.mappywall.auto_walk_active": "Auto walk enabled; press K to stop",
   "hud.mappywall.waiting_for_chunk": "Waiting for chunks ahead",
+  "hud.mappywall.planning_path": "Planning path in background",
   "message.mappywall.started": "MappyWall manual run started.",
   "message.mappywall.paused": "MappyWall run paused.",
   "message.mappywall.resumed": "MappyWall run resumed.",

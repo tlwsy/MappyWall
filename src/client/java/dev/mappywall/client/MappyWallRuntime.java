@@ -376,6 +376,9 @@ public final class MappyWallRuntime {
             if (movementController.isWaitingForChunk()) {
                 lines.add(Text.translatable("hud.mappywall.waiting_for_chunk").formatted(Formatting.YELLOW));
             }
+            if (movementController.isPlanningPath()) {
+                lines.add(Text.translatable("hud.mappywall.planning_path").formatted(Formatting.YELLOW));
+            }
         }
         return lines;
     }
