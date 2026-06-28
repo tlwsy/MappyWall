@@ -26,10 +26,10 @@ import net.minecraft.util.math.Vec3d;
 public final class MovementController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
     private static final double ARRIVAL_DISTANCE_BLOCKS = 4.0;
-    private static final double WAYPOINT_DISTANCE_BLOCKS = 1.15;
+    private static final double WAYPOINT_DISTANCE_BLOCKS = 1.75;
     private static final double STUCK_EPSILON = 0.06;
     private static final int STUCK_TICKS_LIMIT = 70;
-    private static final int REPLAN_INTERVAL_TICKS = 12;
+    private static final int REPLAN_INTERVAL_TICKS = 40;
     private static final int PLACE_COOLDOWN_TICKS = 8;
     private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
@@ -140,21 +140,33 @@ public final class MovementController {
             case PLACE -> placeBlock(client, player, waypoint);
             case SWIM -> swimOrBoat(client, player, waypoint);
             case JUMP -> moveToward(client, player, waypoint, true);
-            case DROP, WALK -> moveToward(client, player, waypoint, player.horizontalCollision);
+            case DROP -> moveToward(client, player, waypoint, false, true, false);
+            case WALK -> moveToward(client, player, waypoint, player.horizontalCollision);
         };
     }
 
     private MovementResult moveToward(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint, boolean jump) {
+        return moveToward(client, player, waypoint, jump, false, true);
+    }
+
+    private MovementResult moveToward(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            LocalPathPlanner.PathStep waypoint,
+            boolean jump,
+            boolean sneak,
+            boolean sprint
+    ) {
         BlockPos pos = waypoint.pos();
         double targetX = pos.getX() + 0.5;
         double targetZ = pos.getZ() + 0.5;
         updateLook(player, targetX - player.getX(), pos.getY() + 0.2 - player.getEyeY(), targetZ - player.getZ(), false);
-        setMovementKeys(client, true, false, false, false, jump, false, true);
+        setMovementKeys(client, true, false, false, false, jump, sneak, sprint);
         return MovementResult.active(pathSnapshot());
     }
 
     private MovementResult swimOrBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
-        if (!player.hasVehicle() && boatCooldown <= 0 && tryUseBoat(client, player)) {
+        if (!player.hasVehicle() && boatCooldown <= 0 && tryUseBoat(client, player, waypoint)) {
             boatCooldown = BOAT_COOLDOWN_TICKS;
             return MovementResult.active(pathSnapshot());
         }
@@ -254,8 +266,12 @@ public final class MovementController {
         return true;
     }
 
-    private boolean tryUseBoat(MinecraftClient client, ClientPlayerEntity player) {
-        if (client.interactionManager == null || !player.isTouchingWater()) {
+    private boolean tryUseBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
+        if (client.interactionManager == null || client.world == null) {
+            return false;
+        }
+        BlockPos waterPos = waypoint.pos();
+        if (!player.isTouchingWater() && !client.world.getFluidState(waterPos).isIn(net.minecraft.registry.tag.FluidTags.WATER)) {
             return false;
         }
         int slot = findBoat(player);
@@ -265,6 +281,13 @@ public final class MovementController {
         if (!selectOrMoveToHotbar(client, player, slot)) {
             return true;
         }
+        face(
+                player,
+                waterPos.getX() + 0.5 - player.getX(),
+                waterPos.getY() + 0.2 - player.getEyeY(),
+                waterPos.getZ() + 0.5 - player.getZ(),
+                true
+        );
         client.interactionManager.interactItem(player, Hand.MAIN_HAND);
         player.swingHand(Hand.MAIN_HAND);
         return true;
@@ -473,14 +496,14 @@ public final class MovementController {
     private void face(ClientPlayerEntity player, double dx, double dy, double dz, boolean includePitch) {
         float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float yawDelta = MathHelper.wrapDegrees(targetYaw - player.getYaw());
-        float nextYaw = player.getYaw() + MathHelper.clamp(yawDelta, -18.0F, 18.0F);
+        float nextYaw = player.getYaw() + MathHelper.clamp(yawDelta, -35.0F, 35.0F);
         player.setYaw(nextYaw);
 
         if (includePitch) {
             double horizontal = Math.sqrt(dx * dx + dz * dz);
             float targetPitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
             float pitchDelta = MathHelper.wrapDegrees(targetPitch - player.getPitch());
-            player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -18.0F, 18.0F));
+            player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -25.0F, 25.0F));
         }
     }
 

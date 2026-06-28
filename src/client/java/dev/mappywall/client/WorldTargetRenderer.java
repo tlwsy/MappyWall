@@ -12,6 +12,10 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
 public final class WorldTargetRenderer {
+    private static final double FAR_MARKER_DISTANCE = 160.0;
+    private static final double BEAM_BOTTOM_OFFSET = -48.0;
+    private static final double BEAM_TOP_OFFSET = 192.0;
+
     private static final RenderLayer TARGET_LINES = RenderLayer.of(
             "mappywall_target_lines",
             RenderSetup.builder(RenderPipelines.LINES_TRANSLUCENT)
@@ -45,25 +49,45 @@ public final class WorldTargetRenderer {
         VertexConsumer vertices = context.consumers().getBuffer(TARGET_LINES);
         Vec3d camera = context.gameRenderer().getCamera().getCameraPos();
 
-        double minX = target.minX();
-        double maxX = target.maxX() + 1.0;
-        double minZ = target.minZ();
-        double maxZ = target.maxZ() + 1.0;
         double playerY = client.player.getY();
-        double groundY = playerY + 0.08;
-        double markerTopY = playerY + 12.0;
         double centerX = target.targetX() + 0.5;
         double centerZ = target.targetZ() + 0.5;
 
-        line(matrices, vertices, camera, minX, groundY, minZ, maxX, groundY, minZ, 64, 224, 255, 255);
-        line(matrices, vertices, camera, maxX, groundY, minZ, maxX, groundY, maxZ, 64, 224, 255, 255);
-        line(matrices, vertices, camera, maxX, groundY, maxZ, minX, groundY, maxZ, 64, 224, 255, 255);
-        line(matrices, vertices, camera, minX, groundY, maxZ, minX, groundY, minZ, 64, 224, 255, 255);
-        line(matrices, vertices, camera, centerX, groundY, centerZ, centerX, markerTopY, centerZ, 64, 224, 255, 255);
+        renderWaypointBeam(matrices, vertices, camera, playerY, centerX, centerZ);
 
         if (target.showPath()) {
             renderPath(matrices, vertices, camera, client, target, centerX, centerZ);
         }
+    }
+
+    private static void renderWaypointBeam(
+            MatrixStack matrices,
+            VertexConsumer vertices,
+            Vec3d camera,
+            double playerY,
+            double targetX,
+            double targetZ
+    ) {
+        double dx = targetX - camera.x;
+        double dz = targetZ - camera.z;
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        double markerX = targetX;
+        double markerZ = targetZ;
+        if (distance > FAR_MARKER_DISTANCE) {
+            markerX = camera.x + dx / distance * FAR_MARKER_DISTANCE;
+            markerZ = camera.z + dz / distance * FAR_MARKER_DISTANCE;
+        }
+
+        double bottomY = playerY + BEAM_BOTTOM_OFFSET;
+        double topY = playerY + BEAM_TOP_OFFSET;
+        double centerY = playerY + 8.0;
+        line(matrices, vertices, camera, markerX, bottomY, markerZ, markerX, topY, markerZ, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX - 3.0, centerY, markerZ, markerX + 3.0, centerY, markerZ, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX, centerY, markerZ - 3.0, markerX, centerY, markerZ + 3.0, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX - 2.0, centerY - 2.0, markerZ, markerX, centerY, markerZ + 2.0, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX, centerY, markerZ + 2.0, markerX + 2.0, centerY - 2.0, markerZ, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX + 2.0, centerY - 2.0, markerZ, markerX, centerY - 4.0, markerZ - 2.0, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX, centerY - 4.0, markerZ - 2.0, markerX - 2.0, centerY - 2.0, markerZ, 64, 224, 255, 255);
     }
 
     private static void renderPath(
@@ -79,7 +103,6 @@ public final class WorldTargetRenderer {
         double previousY = client.player.getY() + 0.25;
         double previousZ = client.player.getZ();
         if (target.path().isEmpty()) {
-            line(matrices, vertices, camera, previousX, previousY, previousZ, centerX, previousY, centerZ, 255, 216, 72, 255);
             return;
         }
 

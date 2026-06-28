@@ -18,10 +18,10 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.World;
 
 public final class LocalPathPlanner {
-    private static final int MAX_NODES = 4800;
-    private static final int MAX_HORIZONTAL_RANGE = 96;
-    private static final int MAX_VERTICAL_RANGE = 12;
-    private static final int MAX_DROP = 4;
+    private static final int MAX_NODES = 2400;
+    private static final int MAX_HORIZONTAL_RANGE = 72;
+    private static final int MAX_VERTICAL_RANGE = 8;
+    private static final int MAX_DROP = 2;
     private static final int REACHED_TARGET_RADIUS = 3;
 
     private static final int[][] DIRECTIONS = {
@@ -137,14 +137,16 @@ public final class LocalPathPlanner {
         if (!withinWorld(world, pos) || isDangerous(world, pos)) {
             return;
         }
-        if (!standable(world, pos) && !swimmable(world, pos)) {
+        boolean swimming = swimmable(world, pos);
+        if (!standable(world, pos) && !swimming) {
             return;
         }
         if (action == StepAction.JUMP && !headClearForJump(world, current.pos)) {
             return;
         }
         double cost = current.cost + extraCost + terrainCost(world, pos);
-        result.add(new SearchNode(pos, current, action, null, cost, heuristic(pos, target)));
+        StepAction plannedAction = swimming ? StepAction.SWIM : action;
+        result.add(new SearchNode(pos, current, plannedAction, null, cost, heuristic(pos, target)));
     }
 
     private void addBreakMove(
