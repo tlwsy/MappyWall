@@ -56,6 +56,7 @@
   "message.mappywall.project_deleted": "MappyWall 任务已删除。",
   "message.mappywall.hanging_order": "MappyWall 挂图顺序：",
   "message.mappywall.order_empty": "这个 MappyWall 任务还没有可输出的地图绑定。",
+  "message.mappywall.needs_empty_map": "MappyWall 需要一张空地图来完成第 %s 列，第 %s 行。",
   "message.mappywall.scale_requires_existing_maps": "注意：原版空地图只能开出比例尺 0。MVP 不会为比例尺 1-4 自动开空地图。",
   "message.mappywall.open_unverified": "MappyWall 已尝试开图，但没有稳定识别到新地图 id，已暂停以避免继续消耗空地图。",
   "message.mappywall.auto_walk_enabled": "AUTO_WALK 已启用：模组会控制前进键，按 K 急停。",

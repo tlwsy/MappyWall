@@ -64,7 +64,7 @@ class InventoryMapIndexTest {
 
         assertEquals(0, result.bindings().size());
         assertTrue(result.hasWarnings());
-        assertTrue(result.warnings().getFirst().contains("Multiple maps [8, 44]"));
+        assertTrue(result.warnings().getFirst().contains("多个地图 [8, 44]"));
     }
 
     @Test
@@ -94,7 +94,7 @@ class InventoryMapIndexTest {
 
         assertEquals(1, result.bindings().size());
         assertTrue(result.hasWarnings());
-        assertTrue(result.warnings().getFirst().contains("Map 12 was bound"));
+        assertTrue(result.warnings().getFirst().contains("地图 12 已绑定"));
     }
 
     @Test

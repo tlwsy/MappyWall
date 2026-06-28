@@ -55,9 +55,9 @@ public final class InventoryMapIndex {
                                 warnings
                         );
                     } else {
-                        warnings.add("Map " + observed.mapId()
-                                + " was bound to " + alreadyBoundRegion
-                                + " but now reports " + signature);
+                        warnings.add("地图 " + observed.mapId()
+                                + " 已绑定到 " + alreadyBoundRegion
+                                + "，但现在读取为 " + signature);
                     }
                 }
                 continue;
@@ -81,8 +81,8 @@ public final class InventoryMapIndex {
                     .sorted(Comparator.comparingInt(ObservedMap::mapId))
                     .toList();
             if (candidates.size() > 1) {
-                warnings.add("Multiple maps " + candidates.stream().map(map -> Integer.toString(map.mapId())).toList()
-                        + " match unbound region " + signature);
+                warnings.add("多个地图 " + candidates.stream().map(map -> Integer.toString(map.mapId())).toList()
+                        + " 同时匹配未绑定区域 " + signature);
                 continue;
             }
 
@@ -119,22 +119,22 @@ public final class InventoryMapIndex {
         String observedSignature = observed.regionSignature();
         RouteStep correctedStep = routeByRegion.get(observedSignature);
         if (correctedStep == null) {
-            warnings.add("Map " + observed.mapId()
-                    + " was opened for " + binding.regionSignature()
-                    + " but reports an area outside this wall: " + observedSignature);
+            warnings.add("地图 " + observed.mapId()
+                    + " 原计划绑定到 " + binding.regionSignature()
+                    + "，但实际区域不在当前地图墙内：" + observedSignature);
             return;
         }
 
         if (boundRegions.contains(observedSignature)) {
-            warnings.add("Map " + observed.mapId()
-                    + " reports already-bound region " + observedSignature
-                    + " instead of " + binding.regionSignature());
+            warnings.add("地图 " + observed.mapId()
+                    + " 实际区域是已绑定区域 " + observedSignature
+                    + "，不是计划区域 " + binding.regionSignature());
             return;
         }
 
         int bindingIndex = repaired.indexOf(binding);
         if (bindingIndex < 0) {
-            warnings.add("Map " + observed.mapId() + " binding could not be repaired");
+            warnings.add("地图 " + observed.mapId() + " 的绑定无法自动修复");
             return;
         }
 

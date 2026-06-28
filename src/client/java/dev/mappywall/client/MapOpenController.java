@@ -85,8 +85,11 @@ public final class MapOpenController {
                 cooldownTicks = 8;
                 return MapOpenAttempt.none();
             }
-            player.sendMessage(Text.literal("MappyWall needs an empty map for "
-                    + target.wallPos().column() + ", " + target.wallPos().row()).formatted(Formatting.YELLOW), false);
+            player.sendMessage(Text.translatable(
+                    "message.mappywall.needs_empty_map",
+                    target.wallPos().column() + 1,
+                    target.wallPos().row() + 1
+            ).formatted(Formatting.YELLOW), false);
             cooldownTicks = 40;
             return MapOpenAttempt.none();
         }
