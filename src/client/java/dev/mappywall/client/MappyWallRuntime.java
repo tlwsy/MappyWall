@@ -120,9 +120,7 @@ public final class MappyWallRuntime {
                 .withProject(activeSave.project().withStatus(ProjectStatus.STOPPED))
                 .withSession(activeSave.session().withPaused(true));
         saveNow(client);
-        activeSave = null;
-        activePath = null;
-        mapOpenController.reset();
+        clearActiveProject();
         if (hasUsableWorld(client)) {
             client.player.sendMessage(Text.translatable("message.mappywall.stopped"), false);
         }
@@ -169,9 +167,7 @@ public final class MappyWallRuntime {
 
         WorldContext context = currentContext(client);
         if (activeSave != null && activeSave.project().id().equals(projectId)) {
-            activeSave = null;
-            activePath = null;
-            mapOpenController.reset();
+            clearActiveProject();
         }
 
         if (persistence.deleteProject(context.serverKey(), context.dimension(), projectId)) {
@@ -196,7 +192,12 @@ public final class MappyWallRuntime {
         }
 
         emptyMapCount = inventoryScanner.countEmptyMaps(client.player);
-        if (activeSave == null || activeSave.project().status() == ProjectStatus.COMPLETE) {
+        if (activeSave == null) {
+            return;
+        }
+
+        if (activeSave.project().status() == ProjectStatus.COMPLETE) {
+            clearActiveProject();
             return;
         }
 
@@ -247,6 +248,8 @@ public final class MappyWallRuntime {
             activeSave = activeSave.withProject(activeSave.project().withStatus(ProjectStatus.COMPLETE));
             saveNow(client);
             showCompletionOrder(client);
+            clearActiveProject();
+            return;
         }
 
         periodicSave(client);
@@ -407,6 +410,12 @@ public final class MappyWallRuntime {
         for (String line : hangingOrderFormatter.format(activeSave)) {
             client.player.sendMessage(Text.literal(line), false);
         }
+    }
+
+    private void clearActiveProject() {
+        activeSave = null;
+        activePath = null;
+        mapOpenController.reset();
     }
 
     private boolean hasUsableWorld(MinecraftClient client) {
