@@ -44,16 +44,9 @@ public final class InventoryMapIndex {
                 if (!alreadyBoundRegion.equals(signature)) {
                     MapBinding binding = bindingByMapId.get(observed.mapId());
                     if (binding != null && binding.verifiedBy() == BindingVerification.TARGET_CAPTURE) {
-                        repairTargetCaptureMismatch(
-                                repaired,
-                                binding,
-                                observed,
-                                routeByRegion,
-                                boundRegions,
-                                boundRegionByMapId,
-                                unboundByRegion,
-                                warnings
-                        );
+                        // Newly opened maps can briefly report a stale/default MapState on the client.
+                        // Trust the target-capture binding until the map state agrees with its planned region.
+                        continue;
                     } else {
                         warnings.add("地图 " + observed.mapId()
                                 + " 已绑定到 " + alreadyBoundRegion
@@ -103,52 +96,25 @@ public final class InventoryMapIndex {
             boundRegionByMapId.put(observed.mapId(), signature);
         }
 
+        for (int index = 0; index < repaired.size(); index++) {
+            MapBinding binding = repaired.get(index);
+            if (binding.verifiedBy() != BindingVerification.TARGET_CAPTURE) {
+                continue;
+            }
+            for (ObservedMap observed : observedMaps) {
+                if (observed.mapId() == binding.mapId() && observed.regionSignature().equals(binding.regionSignature())) {
+                    repaired.set(index, new MapBinding(
+                            binding.wallPos(),
+                            binding.regionSignature(),
+                            binding.mapId(),
+                            binding.openedAt(),
+                            BindingVerification.MAP_STATE
+                    ));
+                    break;
+                }
+            }
+        }
+
         return new BindingRepairResult(repaired, warnings);
-    }
-
-    private void repairTargetCaptureMismatch(
-            List<MapBinding> repaired,
-            MapBinding binding,
-            ObservedMap observed,
-            Map<String, RouteStep> routeByRegion,
-            Set<String> boundRegions,
-            Map<Integer, String> boundRegionByMapId,
-            Map<String, RouteStep> unboundByRegion,
-            List<String> warnings
-    ) {
-        String observedSignature = observed.regionSignature();
-        RouteStep correctedStep = routeByRegion.get(observedSignature);
-        if (correctedStep == null) {
-            warnings.add("地图 " + observed.mapId()
-                    + " 原计划绑定到 " + binding.regionSignature()
-                    + "，但实际区域不在当前地图墙内：" + observedSignature);
-            return;
-        }
-
-        if (boundRegions.contains(observedSignature)) {
-            warnings.add("地图 " + observed.mapId()
-                    + " 实际区域是已绑定区域 " + observedSignature
-                    + "，不是计划区域 " + binding.regionSignature());
-            return;
-        }
-
-        int bindingIndex = repaired.indexOf(binding);
-        if (bindingIndex < 0) {
-            warnings.add("地图 " + observed.mapId() + " 的绑定无法自动修复");
-            return;
-        }
-
-        repaired.set(bindingIndex, new MapBinding(
-                correctedStep.wallPos(),
-                observedSignature,
-                observed.mapId(),
-                binding.openedAt(),
-                BindingVerification.MAP_STATE
-        ));
-        boundRegions.remove(binding.regionSignature());
-        boundRegions.add(observedSignature);
-        boundRegionByMapId.put(observed.mapId(), observedSignature);
-        unboundByRegion.put(binding.regionSignature(), routeByRegion.get(binding.regionSignature()));
-        unboundByRegion.remove(observedSignature);
     }
 }

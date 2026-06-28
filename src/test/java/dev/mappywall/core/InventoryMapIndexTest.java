@@ -98,7 +98,7 @@ class InventoryMapIndexTest {
     }
 
     @Test
-    void repairsTargetCaptureBindingWhenMapStateReportsDifferentUnboundRegion() {
+    void ignoresStaleMapStateForFreshTargetCaptureBinding() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
@@ -123,8 +123,38 @@ class InventoryMapIndexTest {
         BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(save, List.of(actual), Instant.EPOCH);
 
         assertFalse(result.hasWarnings());
-        assertEquals(first.wallPos(), result.bindings().getFirst().wallPos());
-        assertEquals(first.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(second.wallPos(), result.bindings().getFirst().wallPos());
+        assertEquals(second.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(BindingVerification.TARGET_CAPTURE, result.bindings().getFirst().verifiedBy());
+    }
+
+    @Test
+    void upgradesTargetCaptureBindingWhenMapStateAgrees() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep second = save.route().get(1);
+        save = save.withBindings(List.of(new MapBinding(
+                second.wallPos(),
+                second.region().signature(),
+                14,
+                Instant.EPOCH,
+                BindingVerification.TARGET_CAPTURE
+        )));
+
+        ObservedMap actual = new ObservedMap(
+                14,
+                "minecraft:overworld",
+                0,
+                second.region().centerX(),
+                second.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(save, List.of(actual), Instant.EPOCH);
+
+        assertFalse(result.hasWarnings());
+        assertEquals(second.wallPos(), result.bindings().getFirst().wallPos());
+        assertEquals(second.region().signature(), result.bindings().getFirst().regionSignature());
         assertEquals(BindingVerification.MAP_STATE, result.bindings().getFirst().verifiedBy());
     }
 }

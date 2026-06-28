@@ -127,7 +127,7 @@ public final class MappyWallRuntime {
                 .withProject(activeSave.project().withStatus(status))
                 .withSession(activeSave.session().withPaused(paused));
         if (paused) {
-            movementController.release(client);
+            releaseMovementIfAutomatic(client);
         }
         saveNow(client);
 
@@ -260,7 +260,7 @@ public final class MappyWallRuntime {
         }
 
         if (client.isPaused()) {
-            movementController.release(client);
+            releaseMovementIfAutomatic(client);
             periodicSave(client);
             return;
         }
@@ -272,14 +272,14 @@ public final class MappyWallRuntime {
         )));
 
         if (activeSave.session().paused()) {
-            movementController.release(client);
+            releaseMovementIfAutomatic(client);
             periodicSave(client);
             return;
         }
 
         repairManualBindings(client);
         if (activeSave.session().paused()) {
-            movementController.release(client);
+            releaseMovementIfAutomatic(client);
             periodicSave(client);
             return;
         }
@@ -503,10 +503,16 @@ public final class MappyWallRuntime {
     }
 
     private void clearActiveProject() {
+        releaseMovementIfAutomatic(MinecraftClient.getInstance());
         activeSave = null;
         activePath = null;
         mapOpenController.reset();
-        movementController.release(MinecraftClient.getInstance());
+    }
+
+    private void releaseMovementIfAutomatic(MinecraftClient client) {
+        if (activeSave != null && activeSave.project().mode().isAutomatic()) {
+            movementController.release(client);
+        }
     }
 
     private boolean hasUsableWorld(MinecraftClient client) {
