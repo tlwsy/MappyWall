@@ -66,7 +66,14 @@ public final class LocalPathPlanner {
             }
         }
 
-        return new PathPlan(toSteps(best), best.pos, false);
+        List<PathStep> bestPath = toSteps(best);
+        if (bestPath.isEmpty()) {
+            Optional<PathStep> immediateBreak = immediateBreakStep(world, start, target, config);
+            if (immediateBreak.isPresent()) {
+                return new PathPlan(List.of(immediateBreak.get()), start, false);
+            }
+        }
+        return new PathPlan(bestPath, best.pos, false);
     }
 
     private List<PathStep> toSteps(SearchNode node) {
@@ -197,6 +204,34 @@ public final class LocalPathPlanner {
         }
         double cost = current.cost + 12.0 + terrainCost(world, pos);
         result.add(new SearchNode(pos, current, StepAction.PLACE, support, cost, heuristic(pos, target)));
+    }
+
+    private Optional<PathStep> immediateBreakStep(
+            World world,
+            BlockPos start,
+            BlockPos target,
+            AutoNavigationConfig config
+    ) {
+        PathStep best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (int[] direction : DIRECTIONS) {
+            BlockPos pos = start.add(direction[0], 0, direction[1]);
+            Optional<BlockPos> obstacle = firstObstacle(world, pos);
+            if (obstacle.isEmpty()) {
+                continue;
+            }
+            BlockPos block = obstacle.get();
+            String blockId = Registries.BLOCK.getId(world.getBlockState(block).getBlock()).toString();
+            if (!config.allowsBreak(blockId)) {
+                continue;
+            }
+            double score = heuristic(pos, target) + diagonalCost(direction[0], direction[1]);
+            if (score < bestScore) {
+                bestScore = score;
+                best = new PathStep(pos, StepAction.BREAK, block);
+            }
+        }
+        return Optional.ofNullable(best);
     }
 
     private boolean standable(World world, BlockPos feet) {

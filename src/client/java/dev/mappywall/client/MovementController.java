@@ -180,6 +180,7 @@ public final class MovementController {
         BlockPos block = waypoint.actionBlock();
         if (client.world.getBlockState(block).getCollisionShape(client.world, block).isEmpty()) {
             breakingBlock = null;
+            pathIndex++;
             replanCooldown = 0;
             return MovementResult.active(pathSnapshot());
         }
@@ -203,6 +204,11 @@ public final class MovementController {
 
     private MovementResult placeBlock(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
         if (client.interactionManager == null || waypoint.actionBlock() == null || placeCooldown > 0) {
+            return MovementResult.active(pathSnapshot());
+        }
+        if (isSolid(client, waypoint.actionBlock())) {
+            pathIndex++;
+            replanCooldown = 0;
             return MovementResult.active(pathSnapshot());
         }
         int slot = findAllowedPlaceBlock(player);
@@ -317,6 +323,10 @@ public final class MovementController {
     private LocalPathPlanner.PathStep nextWaypoint(ClientPlayerEntity player) {
         while (pathIndex < path.size()) {
             LocalPathPlanner.PathStep step = path.get(pathIndex);
+            if (step.action() == LocalPathPlanner.StepAction.BREAK
+                    || step.action() == LocalPathPlanner.StepAction.PLACE) {
+                return step;
+            }
             if (isAtWaypoint(player, step.pos())) {
                 pathIndex++;
                 continue;
