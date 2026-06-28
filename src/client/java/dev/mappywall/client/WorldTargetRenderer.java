@@ -7,6 +7,7 @@ import net.minecraft.client.gl.RenderPipelines;
 import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.RenderSetup;
 import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
@@ -28,7 +29,7 @@ public final class WorldTargetRenderer {
     }
 
     public static void register(MappyWallRuntime runtime) {
-        WorldRenderEvents.BEFORE_DEBUG_RENDER.register(context -> render(context, runtime));
+        WorldRenderEvents.BEFORE_TRANSLUCENT.register(context -> render(context, runtime));
     }
 
     private static void render(WorldRenderContext context, MappyWallRuntime runtime) {
@@ -46,7 +47,12 @@ public final class WorldTargetRenderer {
             MappyWallRuntime.RenderTarget target
     ) {
         MatrixStack matrices = context.matrices();
-        VertexConsumer vertices = context.consumers().getBuffer(TARGET_LINES);
+        VertexConsumerProvider consumers = context.consumers();
+        if (matrices == null || consumers == null) {
+            return;
+        }
+
+        VertexConsumer vertices = consumers.getBuffer(TARGET_LINES);
         Vec3d camera = context.gameRenderer().getCamera().getCameraPos();
 
         double playerY = client.player.getY();
