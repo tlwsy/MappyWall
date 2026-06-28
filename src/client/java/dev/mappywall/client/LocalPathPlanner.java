@@ -18,10 +18,10 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.World;
 
 public final class LocalPathPlanner {
-    private static final int MAX_NODES = 2400;
+    private static final int MAX_NODES = 3600;
     private static final int MAX_HORIZONTAL_RANGE = 72;
-    private static final int MAX_VERTICAL_RANGE = 8;
-    private static final int MAX_DROP = 2;
+    private static final int MAX_VERTICAL_RANGE = 16;
+    private static final int MAX_DROP = 5;
     private static final int REACHED_TARGET_RADIUS = 3;
 
     private static final int[][] DIRECTIONS = {

@@ -140,9 +140,15 @@ public final class MovementController {
             case PLACE -> placeBlock(client, player, waypoint);
             case SWIM -> swimOrBoat(client, player, waypoint);
             case JUMP -> moveToward(client, player, waypoint, true);
-            case DROP -> moveToward(client, player, waypoint, false, true, false);
+            case DROP -> dropToward(client, player, waypoint);
             case WALK -> moveToward(client, player, waypoint, player.horizontalCollision);
         };
+    }
+
+    private MovementResult dropToward(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
+        double drop = player.getY() - waypoint.pos().getY();
+        boolean careful = drop >= 3.75;
+        return moveToward(client, player, waypoint, false, careful, !careful);
     }
 
     private MovementResult moveToward(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint, boolean jump) {
