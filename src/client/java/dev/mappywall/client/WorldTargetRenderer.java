@@ -115,9 +115,11 @@ public final class WorldTargetRenderer {
         MatrixStack.Entry entry = matrices.peek();
         vertices.vertex(entry, relativeStartX, relativeStartY, relativeStartZ)
                 .color(red, green, blue, alpha)
+                .lineWidth(2.5F)
                 .normal(entry, nx, ny, nz);
         vertices.vertex(entry, relativeEndX, relativeEndY, relativeEndZ)
                 .color(red, green, blue, alpha)
+                .lineWidth(2.5F)
                 .normal(entry, nx, ny, nz);
     }
 }
