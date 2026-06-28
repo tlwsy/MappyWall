@@ -3,6 +3,7 @@
   "key.categories.mappywall.controls": "MappyWall",
   "key.mappywall.open_config": "Open MappyWall jobs",
   "key.mappywall.pause_resume": "Pause/resume MappyWall run",
+  "key.mappywall.emergency_stop": "MappyWall emergency stop",
   "screen.mappywall.tasks.title": "MappyWall Jobs",
   "screen.mappywall.tasks.count": "Jobs in this world",
   "screen.mappywall.tasks.empty": "No jobs in this world and dimension.",
@@ -22,6 +23,7 @@
   "screen.mappywall.pause_resume": "Pause/resume run",
   "screen.mappywall.close": "Close",
   "screen.mappywall.auto_locked": "Automatic modes are planned after the manual MVP.",
+  "screen.mappywall.auto_walk_note": "AUTO_WALK controls forward movement; press K to stop.",
   "screen.mappywall.scale_note": "Note: MVP auto-opening only supports empty maps at scale 0.",
   "hud.mappywall.paused": "Paused",
   "hud.mappywall.pause_hint": "Press U to pause/resume, M for jobs",
@@ -32,6 +34,8 @@
   "hud.mappywall.open_anywhere_in_region": "Open the map anywhere inside the target region",
   "hud.mappywall.inside_target_region": "Inside target region; opening map",
   "hud.mappywall.scale_needs_existing_map": "This scale cannot be opened from empty maps; MVP will not consume empty maps here",
+  "hud.mappywall.auto_walk_active": "Auto walk enabled; press K to stop",
+  "hud.mappywall.waiting_for_chunk": "Waiting for chunks ahead",
   "message.mappywall.started": "MappyWall manual run started.",
   "message.mappywall.paused": "MappyWall run paused.",
   "message.mappywall.resumed": "MappyWall run resumed.",
@@ -45,5 +49,8 @@
   "message.mappywall.order_empty": "This MappyWall job does not have any map bindings to print yet.",
   "message.mappywall.scale_requires_existing_maps": "Heads up: vanilla empty maps only open at scale 0. MVP will not auto-open empty maps for scale 1-4 jobs.",
   "message.mappywall.open_unverified": "MappyWall tried to open a map but could not reliably identify the new map id, so it paused to avoid consuming more empty maps.",
+  "message.mappywall.auto_walk_enabled": "AUTO_WALK enabled: MappyWall will control forward movement. Press K to stop.",
+  "message.mappywall.auto_walk_stuck": "AUTO_WALK detected a collision or stalled movement and paused.",
+  "message.mappywall.emergency_stop": "MappyWall emergency-stopped and paused the job.",
   "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."
 }

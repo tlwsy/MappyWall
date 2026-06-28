@@ -53,6 +53,10 @@ public final class MappyWallRuntime {
     }
 
     public void startManualRun(MinecraftClient client, int scale, int width, int height) {
+        startRun(client, scale, width, height, RunMode.MANUAL);
+    }
+
+    public void startRun(MinecraftClient client, int scale, int width, int height, RunMode mode) {
         if (!hasUsableWorld(client)) {
             return;
         }
@@ -76,7 +80,7 @@ public final class MappyWallRuntime {
                 height,
                 client.player.getX(),
                 client.player.getZ(),
-                RunMode.MANUAL
+                mode
         );
         activeSave = planner.createSave(project);
         activePath = persistence.projectPath(context.serverKey(), context.dimension(), id);
@@ -86,6 +90,9 @@ public final class MappyWallRuntime {
         client.player.sendMessage(Text.translatable("message.mappywall.started"), false);
         if (scale != 0) {
             client.player.sendMessage(Text.translatable("message.mappywall.scale_requires_existing_maps"), false);
+        }
+        if (mode.isAutomatic()) {
+            client.player.sendMessage(Text.translatable("message.mappywall.auto_walk_enabled").formatted(Formatting.YELLOW), false);
         }
     }
 
@@ -102,6 +109,9 @@ public final class MappyWallRuntime {
         activeSave = activeSave
                 .withProject(activeSave.project().withStatus(status))
                 .withSession(activeSave.session().withPaused(paused));
+        if (paused) {
+            movementController.release(client);
+        }
         saveNow(client);
 
         Text message = Text.translatable(paused ? "message.mappywall.paused" : "message.mappywall.resumed");
@@ -123,6 +133,21 @@ public final class MappyWallRuntime {
         clearActiveProject();
         if (hasUsableWorld(client)) {
             client.player.sendMessage(Text.translatable("message.mappywall.stopped"), false);
+        }
+    }
+
+    public void emergencyStop(MinecraftClient client) {
+        movementController.release(client);
+        if (activeSave == null) {
+            return;
+        }
+
+        activeSave = activeSave
+                .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
+                .withSession(activeSave.session().withPaused(true).withWarnings(List.of("Emergency stop")));
+        saveNow(client);
+        if (hasUsableWorld(client)) {
+            client.player.sendMessage(Text.translatable("message.mappywall.emergency_stop").formatted(Formatting.RED), false);
         }
     }
 
@@ -198,6 +223,7 @@ public final class MappyWallRuntime {
             activePath = null;
             activeContext = null;
             mapOpenController.reset();
+            movementController.release(client);
             return;
         }
 
@@ -217,6 +243,7 @@ public final class MappyWallRuntime {
         }
 
         if (client.isPaused()) {
+            movementController.release(client);
             periodicSave(client);
             return;
         }
@@ -229,15 +256,25 @@ public final class MappyWallRuntime {
 
         repairManualBindings(client);
         if (activeSave.session().paused()) {
+            movementController.release(client);
             periodicSave(client);
             return;
         }
 
+        RouteStep target = planner.nextOpenStep(activeSave);
         if (activeSave.project().mode().isAutomatic()) {
-            movementController.tick(client, activeSave);
+            MovementController.MovementResult movement = movementController.tick(client, activeSave, target);
+            if (movement.shouldPause()) {
+                activeSave = activeSave
+                        .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
+                        .withSession(activeSave.session().withPaused(true).withWarnings(List.of(movement.pauseMessage().getString())));
+                client.player.sendMessage(movement.pauseMessage().copy().formatted(Formatting.YELLOW), false);
+                saveNow(client);
+                periodicSave(client);
+                return;
+            }
         }
 
-        RouteStep target = planner.nextOpenStep(activeSave);
         if (target != null
                 && target.region().scale() == 0
                 && target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
@@ -309,7 +346,10 @@ public final class MappyWallRuntime {
         }
 
         if (activeSave.project().mode().isAutomatic()) {
-            lines.add(Text.translatable("message.mappywall.auto_disabled").formatted(Formatting.RED));
+            lines.add(Text.translatable("hud.mappywall.auto_walk_active").formatted(Formatting.RED));
+            if (movementController.isWaitingForChunk()) {
+                lines.add(Text.translatable("hud.mappywall.waiting_for_chunk").formatted(Formatting.YELLOW));
+            }
         }
         return lines;
     }
@@ -394,6 +434,7 @@ public final class MappyWallRuntime {
         activeContext = context;
         ticksSinceSave = 0;
         mapOpenController.reset();
+        movementController.release(client);
     }
 
     private boolean isActiveContext(MinecraftClient client) {
@@ -436,6 +477,7 @@ public final class MappyWallRuntime {
         activeSave = null;
         activePath = null;
         mapOpenController.reset();
+        movementController.release(MinecraftClient.getInstance());
     }
 
     private boolean hasUsableWorld(MinecraftClient client) {

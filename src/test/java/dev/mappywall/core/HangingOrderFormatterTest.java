@@ -21,7 +21,7 @@ class HangingOrderFormatterTest {
 
         List<String> lines = new HangingOrderFormatter().format(save);
 
-        assertTrue(lines.get(0).contains("row 0, column 1"));
-        assertTrue(lines.get(1).contains("row 1, column 0"));
+        assertTrue(lines.get(0).contains("1. row 1, column 2"));
+        assertTrue(lines.get(1).contains("2. row 2, column 1"));
     }
 }

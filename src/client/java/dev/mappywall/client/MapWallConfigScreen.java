@@ -55,16 +55,15 @@ public final class MapWallConfigScreen extends Screen {
                 .dimensions(left + 180, y + 48, 20, 20)
                 .build());
 
-        ButtonWidget modeButton = ButtonWidget.builder(Text.literal("Mode: " + mode.name()), button ->
-                MinecraftClient.getInstance().player.sendMessage(Text.translatable("message.mappywall.auto_disabled"), false)
-        ).dimensions(left, y + 72, 200, 20).build();
-        modeButton.active = false;
-        addDrawableChild(modeButton);
+        addDrawableChild(ButtonWidget.builder(modeLabel(), button -> {
+            mode = mode == RunMode.MANUAL ? RunMode.AUTO_WALK : RunMode.MANUAL;
+            button.setMessage(modeLabel());
+        }).dimensions(left, y + 72, 200, 20).build());
 
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.start"), button -> {
             wallWidth = readWidthValue();
             wallHeight = readHeightValue();
-            runtime.startManualRun(MinecraftClient.getInstance(), scale, wallWidth, wallHeight);
+            runtime.startRun(MinecraftClient.getInstance(), scale, wallWidth, wallHeight, mode);
             close();
         }).dimensions(left, y + 104, 200, 20).build());
 
@@ -83,7 +82,7 @@ public final class MapWallConfigScreen extends Screen {
     public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
         int y = Math.max(24, this.height / 2 - 92);
         graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, y - 18, 0xFFFFFFFF);
-        graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_locked"), this.width / 2, y + 82, 0xFFAAAAAA);
+        graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.auto_walk_note"), this.width / 2, y + 82, 0xFFAAAAAA);
         if (this.height >= 230) {
             graphics.drawCenteredTextWithShadow(this.textRenderer, Text.translatable("screen.mappywall.scale_note"), this.width / 2, y + 178, 0xFFAAAAAA);
         }
@@ -94,6 +93,10 @@ public final class MapWallConfigScreen extends Screen {
 
     private Text label(String key, int value) {
         return Text.translatable(key).append(": " + value);
+    }
+
+    private Text modeLabel() {
+        return Text.translatable("screen.mappywall.mode").append(": " + mode.name());
     }
 
     private TextFieldWidget dimensionField(Text label, int value, int x, int y) {

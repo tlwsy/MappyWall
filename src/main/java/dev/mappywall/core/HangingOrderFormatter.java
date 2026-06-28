@@ -5,17 +5,22 @@ import java.util.List;
 
 public final class HangingOrderFormatter {
     public List<String> format(MapWallSave save) {
-        return save.bindings().stream()
+        List<MapBinding> bindings = save.bindings().stream()
                 .sorted(Comparator
                         .comparingInt((MapBinding binding) -> binding.wallPos().row())
                         .thenComparingInt(binding -> binding.wallPos().column()))
-                .map(binding -> {
+                .toList();
+
+        return java.util.stream.IntStream.range(0, bindings.size())
+                .mapToObj(index -> {
+                    MapBinding binding = bindings.get(index);
                     RouteStep step = findStep(save, binding.wallPos());
                     String target = step == null
                             ? binding.regionSignature()
                             : "center " + step.region().centerX() + ", " + step.region().centerZ();
-                    return "row " + binding.wallPos().row()
-                            + ", column " + binding.wallPos().column()
+                    return (index + 1)
+                            + ". row " + (binding.wallPos().row() + 1)
+                            + ", column " + (binding.wallPos().column() + 1)
                             + " -> map #" + binding.mapId()
                             + " (" + target + ")";
                 })

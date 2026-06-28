@@ -26,6 +26,12 @@ public final class MappyWallKeyBindings {
                 GLFW.GLFW_KEY_U,
                 category
         ));
+        KeyBinding emergencyStop = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.mappywall.emergency_stop",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_K,
+                category
+        ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (openConfig.wasPressed()) {
@@ -33,6 +39,9 @@ public final class MappyWallKeyBindings {
             }
             while (pauseResume.wasPressed()) {
                 runtime.togglePause(MinecraftClient.getInstance());
+            }
+            while (emergencyStop.wasPressed()) {
+                runtime.emergencyStop(MinecraftClient.getInstance());
             }
         });
     }

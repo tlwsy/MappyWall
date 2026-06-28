@@ -3,6 +3,7 @@
   "key.categories.mappywall.controls": "MappyWall",
   "key.mappywall.open_config": "打开 MappyWall 任务",
   "key.mappywall.pause_resume": "暂停/继续 MappyWall 跑图",
+  "key.mappywall.emergency_stop": "MappyWall 急停",
   "screen.mappywall.tasks.title": "MappyWall 任务",
   "screen.mappywall.tasks.count": "当前世界任务数",
   "screen.mappywall.tasks.empty": "当前世界和维度没有任务。",
@@ -22,6 +23,7 @@
   "screen.mappywall.pause_resume": "暂停/继续跑图",
   "screen.mappywall.close": "关闭",
   "screen.mappywall.auto_locked": "自动跑图模式将在手动 MVP 之后实现。",
+  "screen.mappywall.auto_walk_note": "AUTO_WALK 会控制前进键；按 K 急停。",
   "screen.mappywall.scale_note": "提示：MVP 自动开空地图只支持比例尺 0。",
   "hud.mappywall.paused": "已暂停",
   "hud.mappywall.pause_hint": "按 U 暂停/继续，按 M 管理任务",
@@ -32,6 +34,8 @@
   "hud.mappywall.open_anywhere_in_region": "进入目标地图区域即可开图",
   "hud.mappywall.inside_target_region": "已在目标区域，正在开图",
   "hud.mappywall.scale_needs_existing_map": "该比例尺不能用空地图直接开图，MVP 不会自动消耗空地图",
+  "hud.mappywall.auto_walk_active": "自动走路已开启，按 K 急停",
+  "hud.mappywall.waiting_for_chunk": "等待前方区块加载",
   "message.mappywall.started": "MappyWall 手动跑图已开始。",
   "message.mappywall.paused": "MappyWall 跑图已暂停。",
   "message.mappywall.resumed": "MappyWall 跑图已继续。",
@@ -45,5 +49,8 @@
   "message.mappywall.order_empty": "这个 MappyWall 任务还没有可输出的地图绑定。",
   "message.mappywall.scale_requires_existing_maps": "注意：原版空地图只能开出比例尺 0。MVP 不会为比例尺 1-4 自动开空地图。",
   "message.mappywall.open_unverified": "MappyWall 已尝试开图，但没有稳定识别到新地图 id，已暂停以避免继续消耗空地图。",
+  "message.mappywall.auto_walk_enabled": "AUTO_WALK 已启用：模组会控制前进键，按 K 急停。",
+  "message.mappywall.auto_walk_stuck": "AUTO_WALK 检测到卡住或碰撞，已暂停。",
+  "message.mappywall.emergency_stop": "MappyWall 已急停并暂停任务。",
   "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"
 }
