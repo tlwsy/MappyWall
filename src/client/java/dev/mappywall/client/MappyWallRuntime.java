@@ -4,6 +4,7 @@ import dev.mappywall.core.BindingRepairResult;
 import dev.mappywall.core.BindingVerification;
 import dev.mappywall.core.HangingOrderFormatter;
 import dev.mappywall.core.InventoryMapIndex;
+import dev.mappywall.core.MapBounds;
 import dev.mappywall.core.MapWallPlanner;
 import dev.mappywall.core.MapWallProject;
 import dev.mappywall.core.MapWallSave;
@@ -377,6 +378,35 @@ public final class MappyWallRuntime {
         return lines;
     }
 
+    public Optional<RenderTarget> renderTarget(MinecraftClient client) {
+        if (activeSave == null || !isActiveContext(client)) {
+            return Optional.empty();
+        }
+        if (activeSave.project().status() == ProjectStatus.COMPLETE
+                || activeSave.project().status() == ProjectStatus.STOPPED) {
+            return Optional.empty();
+        }
+
+        RouteStep target = planner.nextOpenStep(activeSave);
+        if (target == null) {
+            return Optional.empty();
+        }
+
+        MapBounds bounds = target.region().bounds();
+        boolean showPath = activeSave.project().mode().isAutomatic() && !activeSave.session().paused();
+        return Optional.of(new RenderTarget(
+                target.targetBlock().x(),
+                target.targetBlock().z(),
+                bounds.minX(),
+                bounds.minZ(),
+                bounds.maxX(),
+                bounds.maxZ(),
+                target.wallPos().column(),
+                target.wallPos().row(),
+                showPath
+        ));
+    }
+
     public List<ProjectListItem> listProjects(MinecraftClient client) {
         if (!hasUsableWorld(client)) {
             return List.of();
@@ -648,6 +678,19 @@ public final class MappyWallRuntime {
             int totalSteps,
             String targetText,
             boolean active
+    ) {
+    }
+
+    public record RenderTarget(
+            int targetX,
+            int targetZ,
+            int minX,
+            int minZ,
+            int maxX,
+            int maxZ,
+            int wallColumn,
+            int wallRow,
+            boolean showPath
     ) {
     }
 }

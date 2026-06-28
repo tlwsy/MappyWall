@@ -6,21 +6,15 @@ import dev.mappywall.core.RunMode;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 
 public final class MovementController {
     private static final double ARRIVAL_DISTANCE_BLOCKS = 6.0;
     private static final double STUCK_EPSILON = 0.08;
     private static final int STUCK_TICKS_LIMIT = 80;
-    private static final int WALK_ON_TICKS = 4;
-    private static final int WALK_CYCLE_TICKS = 7;
-    private static final int LOOKAHEAD_BLOCKS = 32;
 
-    private int tickCounter;
     private int stuckTicks;
     private double lastDistance = Double.MAX_VALUE;
-    private boolean waitingForChunk;
 
     public MovementResult tick(MinecraftClient client, MapWallSave save, RouteStep target) {
         if (client.world == null || client.player == null || target == null) {
@@ -52,26 +46,17 @@ public final class MovementController {
             return MovementResult.none();
         }
 
-        if (!isLookaheadChunkLoaded(client, player, dx, dz, distance)) {
-            release(client);
-            waitingForChunk = true;
-            return MovementResult.waiting();
-        }
-        waitingForChunk = false;
-
         updateYaw(player, dx, dz);
-        tickCounter++;
-        boolean walkThisTick = tickCounter % WALK_CYCLE_TICKS < WALK_ON_TICKS;
-        client.options.forwardKey.setPressed(walkThisTick);
+        client.options.forwardKey.setPressed(true);
         client.options.backKey.setPressed(false);
         client.options.leftKey.setPressed(false);
         client.options.rightKey.setPressed(false);
         client.options.jumpKey.setPressed(false);
-        client.options.sprintKey.setPressed(false);
+        client.options.sprintKey.setPressed(true);
 
         if (distance < lastDistance - STUCK_EPSILON) {
             stuckTicks = 0;
-        } else if (walkThisTick) {
+        } else {
             stuckTicks++;
         }
         lastDistance = distance;
@@ -86,7 +71,6 @@ public final class MovementController {
     }
 
     public void release(MinecraftClient client) {
-        waitingForChunk = false;
         if (client.options == null) {
             return;
         }
@@ -99,7 +83,7 @@ public final class MovementController {
     }
 
     public boolean isWaitingForChunk() {
-        return waitingForChunk;
+        return false;
     }
 
     private void updateYaw(ClientPlayerEntity player, double dx, double dz) {
@@ -108,14 +92,6 @@ public final class MovementController {
         float maxTurn = 12.0F;
         float nextYaw = player.getYaw() + MathHelper.clamp(delta, -maxTurn, maxTurn);
         player.setYaw(nextYaw);
-    }
-
-    private boolean isLookaheadChunkLoaded(MinecraftClient client, ClientPlayerEntity player, double dx, double dz, double distance) {
-        double factor = Math.min(LOOKAHEAD_BLOCKS, distance) / distance;
-        double checkX = player.getX() + dx * factor;
-        double checkZ = player.getZ() + dz * factor;
-        BlockPos checkPos = BlockPos.ofFloored(checkX, player.getY(), checkZ);
-        return client.world != null && client.world.isChunkLoaded(checkPos);
     }
 
     private void resetProgress() {
@@ -130,10 +106,6 @@ public final class MovementController {
 
         static MovementResult active() {
             return new MovementResult(true, false, null);
-        }
-
-        static MovementResult waiting() {
-            return new MovementResult(false, true, null);
         }
 
         static MovementResult pause(Text message) {

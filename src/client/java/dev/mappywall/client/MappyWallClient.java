@@ -12,7 +12,7 @@ public final class MappyWallClient implements ClientModInitializer {
     public void onInitializeClient() {
         MappyWallKeyBindings.register(RUNTIME);
         HudProgressRenderer.register(RUNTIME);
+        WorldTargetRenderer.register(RUNTIME);
         ClientTickEvents.END_CLIENT_TICK.register(RUNTIME::tick);
     }
 }
-
