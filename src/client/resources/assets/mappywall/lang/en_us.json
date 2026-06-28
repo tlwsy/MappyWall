@@ -9,6 +9,7 @@
   "screen.mappywall.tasks.more": "More jobs hidden",
   "screen.mappywall.new_task": "New job",
   "screen.mappywall.activate": "Activate",
+  "screen.mappywall.print_order": "Order",
   "screen.mappywall.delete": "Delete",
   "screen.mappywall.stop_hide": "Stop and hide",
   "screen.mappywall.current_step": "Current step",
@@ -40,6 +41,8 @@
   "message.mappywall.project_inactive": "This job is complete and cannot be activated.",
   "message.mappywall.project_activated": "MappyWall job activated.",
   "message.mappywall.project_deleted": "MappyWall job deleted.",
+  "message.mappywall.hanging_order": "MappyWall hanging order:",
+  "message.mappywall.order_empty": "This MappyWall job does not have any map bindings to print yet.",
   "message.mappywall.scale_requires_existing_maps": "Heads up: vanilla empty maps only open at scale 0. MVP will not auto-open empty maps for scale 1-4 jobs.",
   "message.mappywall.open_unverified": "MappyWall tried to open a map but could not reliably identify the new map id, so it paused to avoid consuming more empty maps.",
   "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."

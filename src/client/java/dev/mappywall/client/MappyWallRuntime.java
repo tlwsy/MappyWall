@@ -177,6 +177,21 @@ public final class MappyWallRuntime {
         }
     }
 
+    public void printHangingOrder(MinecraftClient client, String projectId) {
+        if (!hasUsableWorld(client)) {
+            return;
+        }
+
+        WorldContext context = currentContext(client);
+        Optional<PersistenceBridge.LoadedProject> loaded = persistence.loadProject(context.serverKey(), context.dimension(), projectId);
+        if (loaded.isEmpty()) {
+            client.player.sendMessage(Text.translatable("message.mappywall.project_missing"), false);
+            return;
+        }
+
+        showCompletionOrder(client, loaded.get().save());
+    }
+
     public void tick(MinecraftClient client) {
         if (!hasUsableWorld(client)) {
             activeSave = null;
@@ -247,7 +262,7 @@ public final class MappyWallRuntime {
         if (planner.nextOpenStep(activeSave) == null && activeSave.project().status() != ProjectStatus.COMPLETE) {
             activeSave = activeSave.withProject(activeSave.project().withStatus(ProjectStatus.COMPLETE));
             saveNow(client);
-            showCompletionOrder(client);
+            showCompletionOrder(client, activeSave);
             clearActiveProject();
             return;
         }
@@ -405,9 +420,14 @@ public final class MappyWallRuntime {
         }
     }
 
-    private void showCompletionOrder(MinecraftClient client) {
-        client.player.sendMessage(Text.literal("MappyWall hanging order:"), false);
-        for (String line : hangingOrderFormatter.format(activeSave)) {
+    private void showCompletionOrder(MinecraftClient client, MapWallSave save) {
+        if (save.bindings().isEmpty()) {
+            client.player.sendMessage(Text.translatable("message.mappywall.order_empty").formatted(Formatting.YELLOW), false);
+            return;
+        }
+
+        client.player.sendMessage(Text.translatable("message.mappywall.hanging_order"), false);
+        for (String line : hangingOrderFormatter.format(save)) {
             client.player.sendMessage(Text.literal(line), false);
         }
     }

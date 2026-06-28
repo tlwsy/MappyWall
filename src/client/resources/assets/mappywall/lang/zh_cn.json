@@ -9,6 +9,7 @@
   "screen.mappywall.tasks.more": "还有任务未显示",
   "screen.mappywall.new_task": "新建任务",
   "screen.mappywall.activate": "激活",
+  "screen.mappywall.print_order": "顺序",
   "screen.mappywall.delete": "删除",
   "screen.mappywall.stop_hide": "停止并隐藏",
   "screen.mappywall.current_step": "当前子任务",
@@ -40,6 +41,8 @@
   "message.mappywall.project_inactive": "这个任务已经完成，不能激活。",
   "message.mappywall.project_activated": "MappyWall 任务已激活。",
   "message.mappywall.project_deleted": "MappyWall 任务已删除。",
+  "message.mappywall.hanging_order": "MappyWall 挂图顺序：",
+  "message.mappywall.order_empty": "这个 MappyWall 任务还没有可输出的地图绑定。",
   "message.mappywall.scale_requires_existing_maps": "注意：原版空地图只能开出比例尺 0。MVP 不会为比例尺 1-4 自动开空地图。",
   "message.mappywall.open_unverified": "MappyWall 已尝试开图，但没有稳定识别到新地图 id，已暂停以避免继续消耗空地图。",
   "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"

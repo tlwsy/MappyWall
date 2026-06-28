@@ -48,13 +48,20 @@ public final class MapWallTasksScreen extends Screen {
         int visibleTasks = visibleTaskCount(taskY);
         for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
             MappyWallRuntime.ProjectListItem task = tasks.get(i);
-            ButtonWidget activateButton = ButtonWidget.builder(Text.translatable("screen.mappywall.activate"), button -> {
+            boolean completed = task.status() == ProjectStatus.COMPLETE;
+            Text actionText = completed
+                    ? Text.translatable("screen.mappywall.print_order")
+                    : Text.translatable("screen.mappywall.activate");
+            ButtonWidget actionButton = ButtonWidget.builder(actionText, button -> {
+                if (completed) {
+                    runtime.printHangingOrder(MinecraftClient.getInstance(), task.id());
+                    return;
+                }
                 runtime.activateProject(MinecraftClient.getInstance(), task.id());
                 refresh();
             }).dimensions(left + 232, taskY + i * 32, 56, 20).build();
-            activateButton.active = !task.active()
-                    && task.status() != ProjectStatus.COMPLETE;
-            addDrawableChild(activateButton);
+            actionButton.active = completed || !task.active();
+            addDrawableChild(actionButton);
 
             ButtonWidget deleteButton = ButtonWidget.builder(Text.translatable("screen.mappywall.delete"), button -> {
                 runtime.deleteProject(MinecraftClient.getInstance(), task.id());
