@@ -80,8 +80,28 @@ public final class InventoryMapScanner {
                 continue;
             }
 
-            observed.add(new ObservedMap(mapId.id(), dimension, data.scale, data.centerX, data.centerZ));
+            observed.add(new ObservedMap(
+                    mapId.id(),
+                    dimension,
+                    data.scale,
+                    data.centerX,
+                    data.centerZ,
+                    exploredFraction(data)
+            ));
         }
         return observed;
+    }
+
+    private double exploredFraction(MapState data) {
+        if (data.colors.length == 0) {
+            return -1.0;
+        }
+        int explored = 0;
+        for (byte color : data.colors) {
+            if ((color & 0xFF) != 0) {
+                explored++;
+            }
+        }
+        return explored / (double) data.colors.length;
     }
 }

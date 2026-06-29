@@ -49,6 +49,7 @@ public final class MovementController {
     private static final int REGION_ENTRY_INSET_BLOCKS = 8;
     private static final float MOVE_ALIGNMENT_DEGREES = 75.0F;
     private static final float SPRINT_ALIGNMENT_DEGREES = 35.0F;
+    private static final float NORMAL_INTERACT_ALIGNMENT_DEGREES = 12.0F;
     private static final float MOVEMENT_TURN_DEGREES = 12.0F;
     private static final double AGGRESSIVE_ELYTRA_CRUISE_SPEED = 1.18;
     private static final double AGGRESSIVE_ELYTRA_APPROACH_SPEED = 0.72;
@@ -70,6 +71,7 @@ public final class MovementController {
     private static final int REPLAN_INTERVAL_TICKS = 50;
     private static final int RECOVERY_TICKS = 35;
     private static final int PLACE_COOLDOWN_TICKS = 8;
+    private static final int MAX_BREAK_ACTIONS_PER_TARGET = 9;
     private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
     private static final int ELYTRA_START_COOLDOWN_TICKS = 20;
@@ -104,6 +106,8 @@ public final class MovementController {
     private Vec3d lastPlayerPos = Vec3d.ZERO;
     private String targetSignature;
     private BlockPos breakingBlock;
+    private String breakBudgetTargetSignature;
+    private int breakActionsForTarget;
     private int recoveryTicks;
     private Future<LocalPathPlanner.PathPlan> pendingPlan;
     private String pendingPlanSignature;
@@ -120,6 +124,7 @@ public final class MovementController {
         }
 
         automationStyle = save.project().automationStyle();
+        resetBreakBudgetIfTargetChanged(target);
         if (save.project().mode() == RunMode.AUTO_ELYTRA) {
             return tickElytra(client, save, target);
         }
@@ -199,7 +204,14 @@ public final class MovementController {
 
     private MovementResult executeStep(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
         return switch (waypoint.action()) {
-            case BREAK -> breakBlock(client, player, waypoint);
+            case BREAK -> {
+                if (breakActionsForTarget >= MAX_BREAK_ACTIONS_PER_TARGET) {
+                    release(client);
+                    resetProgress();
+                    yield MovementResult.pause(Text.translatable("message.mappywall.auto_walk_too_many_breaks"));
+                }
+                yield breakBlock(client, player, waypoint);
+            }
             case PLACE -> placeBlock(client, player, waypoint);
             case SWIM -> swimOrBoat(client, player, waypoint);
             case JUMP -> moveToward(client, player, waypoint, true);
@@ -548,12 +560,20 @@ public final class MovementController {
         if (client.world.getBlockState(block).getCollisionShape(client.world, block).isEmpty()) {
             breakingBlock = null;
             releaseAttackKey(client);
+            breakActionsForTarget++;
             pathIndex++;
             replanCooldown = 0;
             return MovementResult.active(pathSnapshot());
         }
 
         releaseMovementKeys(client);
+        if (placeCooldown > 0) {
+            return MovementResult.active(pathSnapshot());
+        }
+        if (!selectBestToolForBlock(client, player, block)) {
+            placeCooldown = 4;
+            return MovementResult.active(pathSnapshot());
+        }
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
             sendServerLookAt(player, block.toCenterPos());
         } else {
@@ -577,12 +597,16 @@ public final class MovementController {
 
     private MovementResult placeBlock(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
         releaseAttackKey(client);
-        if (client.interactionManager == null || waypoint.actionBlock() == null || placeCooldown > 0) {
+        if (client.interactionManager == null || waypoint.actionBlock() == null) {
             return MovementResult.active(pathSnapshot());
         }
         if (isSolid(client, waypoint.actionBlock())) {
             pathIndex++;
             replanCooldown = 0;
+            return MovementResult.active(pathSnapshot());
+        }
+        releaseMovementKeys(client);
+        if (placeCooldown > 0) {
             return MovementResult.active(pathSnapshot());
         }
         int slot = findAllowedPlaceBlock(player);
@@ -592,6 +616,7 @@ public final class MovementController {
             return MovementResult.pause(Text.translatable("message.mappywall.auto_walk_no_place_block"));
         }
         if (!selectOrMoveToHotbar(client, player, slot)) {
+            releaseMovementKeys(client);
             placeCooldown = 4;
             return MovementResult.active(pathSnapshot());
         }
@@ -602,11 +627,19 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
 
-        releaseMovementKeys(client);
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
             sendServerLookAt(player, hit.getPos());
         } else {
-            face(player, hit.getPos().x - player.getX(), hit.getPos().y - player.getEyeY(), hit.getPos().z - player.getZ(), true);
+            float error = face(
+                    player,
+                    hit.getPos().x - player.getX(),
+                    hit.getPos().y - player.getEyeY(),
+                    hit.getPos().z - player.getZ(),
+                    true
+            );
+            if (error > NORMAL_INTERACT_ALIGNMENT_DEGREES) {
+                return MovementResult.active(pathSnapshot());
+            }
         }
         client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
         player.swingHand(Hand.MAIN_HAND);
@@ -1130,6 +1163,47 @@ public final class MovementController {
         return -1;
     }
 
+    private boolean selectBestToolForBlock(MinecraftClient client, ClientPlayerEntity player, BlockPos block) {
+        if (client.world == null) {
+            return true;
+        }
+        BlockState state = client.world.getBlockState(block);
+        int slot = findBestTool(player, state);
+        if (slot < 0 || slot == player.getInventory().getSelectedSlot()) {
+            return true;
+        }
+        return selectOrMoveToHotbar(client, player, slot);
+    }
+
+    private int findBestTool(ClientPlayerEntity player, BlockState state) {
+        int selected = player.getInventory().getSelectedSlot();
+        double bestScore = miningScore(player.getInventory().getMainStacks().get(selected), state);
+        int bestSlot = selected;
+        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
+            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            double score = miningScore(stack, state);
+            if (score > bestScore + 0.05) {
+                bestScore = score;
+                bestSlot = slot;
+            }
+        }
+        return bestSlot == selected ? -1 : bestSlot;
+    }
+
+    private double miningScore(ItemStack stack, BlockState state) {
+        if (stack.isEmpty()) {
+            return 0.0;
+        }
+        double score = stack.getMiningSpeedMultiplier(state);
+        if (stack.isSuitableFor(state)) {
+            score += 100.0;
+        }
+        return score;
+    }
+
     private int findBoat(ClientPlayerEntity player) {
         for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
             ItemStack stack = player.getInventory().getMainStacks().get(slot);
@@ -1404,18 +1478,21 @@ public final class MovementController {
         );
     }
 
-    private void face(ClientPlayerEntity player, double dx, double dy, double dz, boolean includePitch) {
+    private float face(ClientPlayerEntity player, double dx, double dy, double dz, boolean includePitch) {
         float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float yawDelta = MathHelper.wrapDegrees(targetYaw - player.getYaw());
         float nextYaw = player.getYaw() + MathHelper.clamp(yawDelta, -35.0F, 35.0F);
         player.setYaw(nextYaw);
+        float error = Math.abs(yawDelta);
 
         if (includePitch) {
             double horizontal = Math.sqrt(dx * dx + dz * dz);
             float targetPitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
             float pitchDelta = MathHelper.wrapDegrees(targetPitch - player.getPitch());
             player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -25.0F, 25.0F));
+            error = Math.max(error, Math.abs(pitchDelta));
         }
+        return error;
     }
 
     private void tickCooldowns() {
@@ -1454,10 +1531,21 @@ public final class MovementController {
         targetSignature = null;
         breakingBlock = null;
         recoveryTicks = 0;
+        placeCooldown = 0;
+        boatCooldown = 0;
+        eatCooldown = 0;
         elytraStartCooldown = 0;
         fireworkCooldown = 0;
         dismountCooldown = 0;
         cancelPendingPlan();
+    }
+
+    private void resetBreakBudgetIfTargetChanged(RouteStep target) {
+        String signature = target.region().signature();
+        if (!signature.equals(breakBudgetTargetSignature)) {
+            breakBudgetTargetSignature = signature;
+            breakActionsForTarget = 0;
+        }
     }
 
     private boolean arrivedAtNavigationTarget(ClientPlayerEntity player, RouteStep target) {

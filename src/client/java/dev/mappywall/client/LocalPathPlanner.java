@@ -24,6 +24,7 @@ public final class LocalPathPlanner {
     private static final int MAX_HORIZONTAL_RANGE = 36;
     private static final int MAX_VERTICAL_RANGE = 10;
     private static final int MAX_DROP = 3;
+    private static final int MAX_BREAK_BLOCKS = 9;
     private static final int REACHED_TARGET_RADIUS = 3;
     private static final int REGION_ENTRY_INSET_BLOCKS = 8;
 
@@ -45,11 +46,11 @@ public final class LocalPathPlanner {
     public PathPlan plan(NavigationSnapshot snapshot, RouteStep routeStep, AutoNavigationConfig config) {
         BlockPos start = stableFeetPos(snapshot, snapshot.start());
         BlockPos target = nearestRegionTarget(start, routeStep);
-        SearchNode startNode = new SearchNode(start, null, StepAction.WALK, null, 0.0, heuristic(start, target));
+        SearchNode startNode = new SearchNode(start, null, StepAction.WALK, null, 0, 0.0, heuristic(start, target));
         PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingDouble(SearchNode::score));
-        Map<BlockPos, Double> bestCost = new HashMap<>();
+        Map<SearchKey, Double> bestCost = new HashMap<>();
         open.add(startNode);
-        bestCost.put(start, 0.0);
+        bestCost.put(new SearchKey(start, 0), 0.0);
 
         SearchNode best = startNode;
         int visited = 0;
@@ -66,11 +67,11 @@ public final class LocalPathPlanner {
             }
 
             for (SearchNode next : neighbors(snapshot, current, start, target, config)) {
-                Double known = bestCost.get(next.pos);
+                Double known = bestCost.get(new SearchKey(next.pos, next.breakCount));
                 if (known != null && known <= next.cost) {
                     continue;
                 }
-                bestCost.put(next.pos, next.cost);
+                bestCost.put(new SearchKey(next.pos, next.breakCount), next.cost);
                 open.add(next);
             }
         }
@@ -117,20 +118,23 @@ public final class LocalPathPlanner {
             if (Math.abs(dx) + Math.abs(dz) == 2 && clipsDiagonal(world, current.pos, dx, dz)) {
                 continue;
             }
+            boolean diagonal = Math.abs(dx) + Math.abs(dz) == 2;
 
             addMove(world, result, current, target, current.pos.add(dx, 0, dz), StepAction.WALK, 1.0 + diagonalCost(dx, dz), config);
-            addMove(world, result, current, target, current.pos.add(dx, 1, dz), StepAction.JUMP, 2.2 + diagonalCost(dx, dz), config);
-            for (int drop = 1; drop <= MAX_DROP; drop++) {
-                BlockPos down = current.pos.add(dx, -drop, dz);
-                if (down.getY() < world.getBottomY()) {
-                    break;
-                }
-                if (standable(world, down) || swimmable(world, down)) {
-                    addMove(world, result, current, target, down, StepAction.DROP, 1.5 + drop + diagonalCost(dx, dz), config);
-                    break;
-                }
-                if (!isPassable(world, down)) {
-                    break;
+            if (!diagonal) {
+                addMove(world, result, current, target, current.pos.add(dx, 1, dz), StepAction.JUMP, 2.2, config);
+                for (int drop = 1; drop <= MAX_DROP; drop++) {
+                    BlockPos down = current.pos.add(dx, -drop, dz);
+                    if (down.getY() < world.getBottomY()) {
+                        break;
+                    }
+                    if (standable(world, down) || swimmable(world, down)) {
+                        addMove(world, result, current, target, down, StepAction.DROP, 1.5 + drop, config);
+                        break;
+                    }
+                    if (!isPassable(world, down)) {
+                        break;
+                    }
                 }
             }
 
@@ -162,7 +166,7 @@ public final class LocalPathPlanner {
         }
         double cost = current.cost + extraCost + terrainCost(world, pos);
         StepAction plannedAction = swimming ? StepAction.SWIM : action;
-        result.add(new SearchNode(pos, current, plannedAction, null, cost, heuristic(pos, target)));
+        result.add(new SearchNode(pos, current, plannedAction, null, current.breakCount, cost, heuristic(pos, target)));
     }
 
     private void addBreakMove(
@@ -175,7 +179,7 @@ public final class LocalPathPlanner {
             int dx,
             int dz
     ) {
-        if (!config.blockBreakingEnabled() || !withinWorld(world, pos)) {
+        if (!config.blockBreakingEnabled() || !withinWorld(world, pos) || current.breakCount >= MAX_BREAK_BLOCKS) {
             return;
         }
         Optional<BlockPos> obstacle = firstObstacle(world, pos);
@@ -196,7 +200,15 @@ public final class LocalPathPlanner {
             return;
         }
         double cost = current.cost + 80.0 + diagonalCost(dx, dz) + heuristic(simulated, target) * 0.05;
-        result.add(new SearchNode(simulated, current, StepAction.BREAK, block, cost, heuristic(simulated, target)));
+        result.add(new SearchNode(
+                simulated,
+                current,
+                StepAction.BREAK,
+                block,
+                current.breakCount + 1,
+                cost,
+                heuristic(simulated, target)
+        ));
     }
 
     private void addPlaceMove(
@@ -215,7 +227,7 @@ public final class LocalPathPlanner {
             return;
         }
         double cost = current.cost + 12.0 + terrainCost(world, pos);
-        result.add(new SearchNode(pos, current, StepAction.PLACE, support, cost, heuristic(pos, target)));
+        result.add(new SearchNode(pos, current, StepAction.PLACE, support, current.breakCount, cost, heuristic(pos, target)));
     }
 
     private Optional<PathStep> immediateBreakStep(
@@ -396,12 +408,16 @@ public final class LocalPathPlanner {
             SearchNode parent,
             StepAction action,
             BlockPos actionBlock,
+            int breakCount,
             double cost,
             double heuristic
     ) {
         double score() {
             return cost + heuristic;
         }
+    }
+
+    private record SearchKey(BlockPos pos, int breakCount) {
     }
 
     public record PathPlan(List<PathStep> steps, BlockPos plannedEnd, boolean reachedTarget) {

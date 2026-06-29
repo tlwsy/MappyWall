@@ -25,6 +25,8 @@ public final class MapWallConfigScreen extends Screen {
     private int rowStepZ = 1;
     private TextFieldWidget widthField;
     private TextFieldWidget heightField;
+    private ButtonWidget automationStyleButton;
+    private ButtonWidget postOpenButton;
 
     public MapWallConfigScreen(MappyWallRuntime runtime) {
         super(Text.translatable("screen.mappywall.config.title"));
@@ -82,9 +84,10 @@ public final class MapWallConfigScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(modeLabel(), button -> {
             mode = nextMode(mode);
             button.setMessage(modeLabel());
+            updateModeDependentControls();
         }).dimensions(left, y + 120, 98, 20).build());
 
-        addDrawableChild(ButtonWidget.builder(automationStyleLabel(), button -> {
+        automationStyleButton = addDrawableChild(ButtonWidget.builder(automationStyleLabel(), button -> {
             automationStyle = automationStyle == AutomationStyle.NORMAL
                     ? AutomationStyle.AGGRESSIVE
                     : AutomationStyle.NORMAL;
@@ -93,7 +96,7 @@ public final class MapWallConfigScreen extends Screen {
                 .tooltip(Tooltip.of(Text.translatable("screen.mappywall.automation_style_tooltip")))
                 .build());
 
-        addDrawableChild(ButtonWidget.builder(postOpenLabel(), button -> {
+        postOpenButton = addDrawableChild(ButtonWidget.builder(postOpenLabel(), button -> {
             postOpenMode = postOpenMode == PostOpenMode.OPEN_FIRST
                     ? PostOpenMode.FILL_AFTER_OPEN
                     : PostOpenMode.OPEN_FIRST;
@@ -112,8 +115,8 @@ public final class MapWallConfigScreen extends Screen {
                     anchorMode,
                     columnStepX,
                     rowStepZ,
-                    postOpenMode,
-                    automationStyle
+                    mode.isAutomatic() ? postOpenMode : PostOpenMode.OPEN_FIRST,
+                    mode.isAutomatic() ? automationStyle : AutomationStyle.NORMAL
             );
             close();
         }).dimensions(left, y + 168, 200, 20).build());
@@ -121,6 +124,7 @@ public final class MapWallConfigScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
                 .dimensions(left, y + 192, 200, 20)
                 .build());
+        updateModeDependentControls();
     }
 
     @Override
@@ -158,6 +162,18 @@ public final class MapWallConfigScreen extends Screen {
                 ? "screen.mappywall.post_open_open_first"
                 : "screen.mappywall.post_open_fill_after_open";
         return Text.translatable("screen.mappywall.post_open").append(": ").append(Text.translatable(key));
+    }
+
+    private void updateModeDependentControls() {
+        boolean automatic = mode.isAutomatic();
+        if (automationStyleButton != null) {
+            automationStyleButton.active = automatic;
+            automationStyleButton.setMessage(automationStyleLabel());
+        }
+        if (postOpenButton != null) {
+            postOpenButton.active = automatic;
+            postOpenButton.setMessage(postOpenLabel());
+        }
     }
 
     private Text anchorLabel() {

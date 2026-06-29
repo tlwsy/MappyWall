@@ -6,6 +6,7 @@ import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.HangingOrderFormatter;
 import dev.mappywall.core.InventoryMapIndex;
 import dev.mappywall.core.MapBounds;
+import dev.mappywall.core.MapBinding;
 import dev.mappywall.core.MapWallPlanner;
 import dev.mappywall.core.MapWallProject;
 import dev.mappywall.core.MapWallSave;
@@ -27,6 +28,11 @@ import java.util.Optional;
 import java.util.UUID;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.screen.CartographyTableScreenHandler;
+import net.minecraft.screen.slot.Slot;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.math.BlockPos;
@@ -343,9 +349,35 @@ public final class MappyWallRuntime {
             return;
         }
 
-        RouteStep fillStep = planner.nextFillStep(activeSave);
+        RouteStep fillStep = nextFillStepForRun(activeSave);
+        if (fillStep != null) {
+            MapWallSave repaired = repairZoomedFillBinding(client, activeSave, fillStep);
+            if (repaired != activeSave) {
+                activeSave = repaired;
+                saveNow(client);
+                fillStep = nextFillStepForRun(activeSave);
+            }
+        }
         RouteStep openTarget = fillStep == null ? planner.nextOpenStep(activeSave) : null;
         RouteStep movementTarget = fillStep == null ? openTarget : planner.fillNavigationStep(activeSave, fillStep);
+        if (fillStep != null && !fillMapReadyForTargetScale(client, fillStep)) {
+            Text message = activeSave.project().automationStyle() == AutomationStyle.AGGRESSIVE
+                    ? aggressiveAutoZoom(client, fillStep)
+                    : Text.translatable("message.mappywall.fill_requires_zoomed_map", fillStep.region().scale());
+            if (message == null) {
+                periodicSave(client);
+                return;
+            }
+            activeSave = activeSave
+                    .withProject(activeSave.project().withStatus(ProjectStatus.PAUSED))
+                    .withSession(activeSave.session().withPaused(true).withWarnings(List.of(message.getString())));
+            movementController.release(client);
+            movementPath = List.of();
+            client.player.sendMessage(message.copy().formatted(Formatting.YELLOW), false);
+            saveNow(client);
+            periodicSave(client);
+            return;
+        }
         if (activeSave.project().mode().isAutomatic()) {
             MovementController.MovementResult movement = movementController.tick(client, activeSave, movementTarget);
             movementPath = movement.path();
@@ -390,7 +422,7 @@ public final class MappyWallRuntime {
         }
 
         if (planner.nextOpenStep(activeSave) == null
-                && planner.nextFillStep(activeSave) == null
+                && nextFillStepForRun(activeSave) == null
                 && activeSave.project().status() != ProjectStatus.COMPLETE) {
             activeSave = activeSave.withProject(activeSave.project().withStatus(ProjectStatus.COMPLETE));
             saveNow(client);
@@ -408,7 +440,7 @@ public final class MappyWallRuntime {
             return lines;
         }
 
-        RouteStep fillStep = planner.nextFillStep(activeSave);
+        RouteStep fillStep = nextFillStepForRun(activeSave);
         RouteStep target = fillStep == null ? planner.nextOpenStep(activeSave) : planner.fillNavigationStep(activeSave, fillStep);
         int completed = activeSave.bindings().size();
         int total = activeSave.route().size();
@@ -433,6 +465,12 @@ public final class MappyWallRuntime {
                         activeSave.session().fillWaypointIndex() + 1,
                         planner.fillWaypointCount(fillStep.region())
                 ).formatted(Formatting.GREEN));
+                observedMapForFillStep(client, fillStep)
+                        .filter(observed -> observed.exploredFraction() >= 0.0)
+                        .ifPresent(observed -> lines.add(Text.translatable(
+                                "hud.mappywall.map_explored",
+                                Math.round(observed.exploredFraction() * 100.0)
+                        ).formatted(Formatting.GRAY)));
             } else if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
                 lines.add(Text.translatable("hud.mappywall.inside_target_region").formatted(Formatting.GREEN));
             } else {
@@ -471,7 +509,7 @@ public final class MappyWallRuntime {
             return Optional.empty();
         }
 
-        RouteStep fillStep = planner.nextFillStep(activeSave);
+        RouteStep fillStep = nextFillStepForRun(activeSave);
         RouteStep target = fillStep == null ? planner.nextOpenStep(activeSave) : planner.fillNavigationStep(activeSave, fillStep);
         if (target == null) {
             return Optional.empty();
@@ -502,7 +540,7 @@ public final class MappyWallRuntime {
         List<ProjectListItem> items = new ArrayList<>();
         for (PersistenceBridge.LoadedProject loaded : persistence.listProjects(context.serverKey(), context.dimension())) {
             MapWallSave save = loaded.save();
-            RouteStep fillStep = planner.nextFillStep(save);
+            RouteStep fillStep = nextFillStepForRun(save);
             RouteStep target = fillStep == null ? planner.nextOpenStep(save) : planner.fillNavigationStep(save, fillStep);
             int completed = save.bindings().size();
             int total = save.route().size();
@@ -541,6 +579,169 @@ public final class MappyWallRuntime {
     private boolean reachedFillTarget(MinecraftClient client, RouteStep target) {
         return client.player != null
                 && target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()) <= 16.0;
+    }
+
+    private RouteStep nextFillStepForRun(MapWallSave save) {
+        if (save == null || !save.project().mode().isAutomatic()) {
+            return null;
+        }
+        return planner.nextFillStep(save);
+    }
+
+    private boolean fillMapReadyForTargetScale(MinecraftClient client, RouteStep fillStep) {
+        int targetScale = fillStep.region().scale();
+        if (targetScale == 0) {
+            return true;
+        }
+        return observedMapForFillStep(client, fillStep)
+                .filter(observed -> observed.scale() == targetScale)
+                .filter(observed -> observed.regionSignature().equals(fillStep.region().signature()))
+                .isPresent();
+    }
+
+    private MapWallSave repairZoomedFillBinding(MinecraftClient client, MapWallSave save, RouteStep fillStep) {
+        if (fillStep.region().scale() == 0) {
+            return save;
+        }
+        Optional<MapBinding> existing = bindingForRegion(save, fillStep.region().signature());
+        if (existing.isEmpty()) {
+            return save;
+        }
+        List<ObservedMap> matches = inventoryScanner.scanFilledMaps(client).stream()
+                .filter(observed -> observed.scale() == fillStep.region().scale())
+                .filter(observed -> observed.regionSignature().equals(fillStep.region().signature()))
+                .toList();
+        if (matches.size() != 1 || matches.getFirst().mapId() == existing.get().mapId()) {
+            return save;
+        }
+
+        ObservedMap observed = matches.getFirst();
+        List<MapBinding> bindings = new ArrayList<>(save.bindings());
+        for (int index = 0; index < bindings.size(); index++) {
+            MapBinding binding = bindings.get(index);
+            if (binding.regionSignature().equals(fillStep.region().signature())) {
+                bindings.set(index, new MapBinding(
+                        binding.wallPos(),
+                        binding.regionSignature(),
+                        observed.mapId(),
+                        binding.openedAt(),
+                        BindingVerification.MAP_STATE
+                ));
+                return save.withBindings(bindings);
+            }
+        }
+        return save;
+    }
+
+    private Optional<ObservedMap> observedMapForFillStep(MinecraftClient client, RouteStep fillStep) {
+        if (activeSave == null) {
+            return Optional.empty();
+        }
+        Optional<MapBinding> binding = bindingForRegion(activeSave, fillStep.region().signature());
+        if (binding.isEmpty()) {
+            return Optional.empty();
+        }
+        for (ObservedMap observed : inventoryScanner.scanFilledMaps(client)) {
+            if (observed.mapId() == binding.get().mapId()) {
+                return Optional.of(observed);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<MapBinding> bindingForRegion(MapWallSave save, String regionSignature) {
+        return save.bindings().stream()
+                .filter(binding -> binding.regionSignature().equals(regionSignature))
+                .findFirst();
+    }
+
+    private Text aggressiveAutoZoom(MinecraftClient client, RouteStep fillStep) {
+        if (client.player == null) {
+            return Text.translatable("message.mappywall.fill_requires_zoomed_map", fillStep.region().scale());
+        }
+        if (!(client.player.currentScreenHandler instanceof CartographyTableScreenHandler handler)) {
+            return Text.translatable("message.mappywall.auto_zoom_open_cartography", fillStep.region().scale());
+        }
+        if (handler.slots.size() < 3) {
+            return Text.translatable("message.mappywall.fill_requires_zoomed_map", fillStep.region().scale());
+        }
+
+        Optional<MapBinding> binding = bindingForRegion(activeSave, fillStep.region().signature());
+        if (binding.isEmpty()) {
+            return Text.translatable("message.mappywall.auto_zoom_no_bound_map");
+        }
+
+        Slot resultSlot = handler.slots.get(2);
+        if (isFilledMap(resultSlot.getStack())) {
+            return quickMoveSlot(client, resultSlot.id) ? null : Text.translatable("message.mappywall.fill_requires_zoomed_map", fillStep.region().scale());
+        }
+
+        Slot mapInput = handler.slots.get(0);
+        if (!isMapWithId(mapInput.getStack(), binding.get().mapId())) {
+            int mapSlot = findMapSlot(handler, binding.get().mapId());
+            if (mapSlot < 0) {
+                return Text.translatable("message.mappywall.auto_zoom_no_bound_map");
+            }
+            return quickMoveSlot(client, handler.slots.get(mapSlot).id)
+                    ? null
+                    : Text.translatable("message.mappywall.fill_requires_zoomed_map", fillStep.region().scale());
+        }
+
+        Slot paperInput = handler.slots.get(1);
+        if (!paperInput.getStack().isOf(Items.PAPER)) {
+            int paperSlot = findPaperSlot(handler);
+            if (paperSlot < 0) {
+                return Text.translatable("message.mappywall.auto_zoom_no_paper");
+            }
+            return quickMoveSlot(client, handler.slots.get(paperSlot).id)
+                    ? null
+                    : Text.translatable("message.mappywall.fill_requires_zoomed_map", fillStep.region().scale());
+        }
+        return null;
+    }
+
+    private int findMapSlot(CartographyTableScreenHandler handler, int mapId) {
+        for (int slot = 0; slot < handler.slots.size(); slot++) {
+            if (slot == 2 && handler.slots.size() > 2) {
+                continue;
+            }
+            if (isMapWithId(handler.slots.get(slot).getStack(), mapId)) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private int findPaperSlot(CartographyTableScreenHandler handler) {
+        for (int slot = 3; slot < handler.slots.size(); slot++) {
+            if (handler.slots.get(slot).getStack().isOf(Items.PAPER)) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private boolean isMapWithId(ItemStack stack, int mapId) {
+        Integer stackMapId = InventoryMapIds.readMapId(stack);
+        return stackMapId != null && stackMapId == mapId;
+    }
+
+    private boolean isFilledMap(ItemStack stack) {
+        return stack.isOf(Items.FILLED_MAP) && InventoryMapIds.readMapId(stack) != null;
+    }
+
+    private boolean quickMoveSlot(MinecraftClient client, int slotId) {
+        if (client.player == null || client.interactionManager == null) {
+            return false;
+        }
+        client.interactionManager.clickSlot(
+                client.player.currentScreenHandler.syncId,
+                slotId,
+                0,
+                SlotActionType.QUICK_MOVE,
+                client.player
+        );
+        return true;
     }
 
     private String autoMessageKey(RunMode mode, AutomationStyle automationStyle) {

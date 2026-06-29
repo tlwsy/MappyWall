@@ -291,21 +291,56 @@ public final class MapWallPlanner {
         MapBounds bounds = region.bounds();
         int width = bounds.maxX() - bounds.minX() + 1;
         int depth = bounds.maxZ() - bounds.minZ() + 1;
-        int marginX = Math.max(8, Math.min(64, width / 4));
-        int marginZ = Math.max(8, Math.min(64, depth / 4));
+        int samples = fillSamplesPerAxis(region.scale());
+        if (samples <= 1) {
+            return List.of(new BlockTarget(region.centerX(), region.centerZ()));
+        }
+
+        int marginX = Math.max(8, Math.min(64, width / 8));
+        int marginZ = Math.max(8, Math.min(64, depth / 8));
         int west = bounds.minX() + marginX;
         int east = bounds.maxX() - marginX;
         int north = bounds.minZ() + marginZ;
         int south = bounds.maxZ() - marginZ;
 
-        return List.of(
-                new BlockTarget(region.centerX(), region.centerZ()),
-                new BlockTarget(west, north),
-                new BlockTarget(east, north),
-                new BlockTarget(east, south),
-                new BlockTarget(west, south),
-                new BlockTarget(region.centerX(), region.centerZ())
-        );
+        List<BlockTarget> targets = new ArrayList<>(samples * samples + 1);
+        addFillTarget(targets, new BlockTarget(region.centerX(), region.centerZ()));
+        for (int row = 0; row < samples; row++) {
+            int z = interpolate(north, south, row, samples);
+            if (row % 2 == 0) {
+                for (int column = 0; column < samples; column++) {
+                    addFillTarget(targets, new BlockTarget(interpolate(west, east, column, samples), z));
+                }
+            } else {
+                for (int column = samples - 1; column >= 0; column--) {
+                    addFillTarget(targets, new BlockTarget(interpolate(west, east, column, samples), z));
+                }
+            }
+        }
+        return List.copyOf(targets);
+    }
+
+    private int fillSamplesPerAxis(int scale) {
+        return switch (scale) {
+            case 0 -> 1;
+            case 1 -> 3;
+            case 2 -> 4;
+            case 3 -> 5;
+            default -> 7;
+        };
+    }
+
+    private int interpolate(int min, int max, int index, int samples) {
+        if (samples <= 1) {
+            return (min + max) / 2;
+        }
+        return Math.round(min + (max - min) * (index / (float) (samples - 1)));
+    }
+
+    private void addFillTarget(List<BlockTarget> targets, BlockTarget target) {
+        if (targets.isEmpty() || !targets.getLast().equals(target)) {
+            targets.add(target);
+        }
     }
 
     private MapRegion anchorFor(

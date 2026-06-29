@@ -57,9 +57,10 @@
   "hud.mappywall.scale_needs_existing_map": "Empty maps open at scale 0; craft/zoom them afterward",
   "hud.mappywall.scale_empty_maps_open_as_zero": "MappyWall will open a scale 0 map; craft/zoom it to the target scale afterward",
   "hud.mappywall.fill_waypoint": "Post-open fill point: %s/%s",
+  "hud.mappywall.map_explored": "Current map explored: %s%%",
   "hud.mappywall.auto_walk_active": "Auto walk enabled; press K to stop",
   "hud.mappywall.auto_elytra_active": "Elytra + fireworks enabled; press K to stop",
-  "hud.mappywall.aggressive_active": "Aggressive automation: server-facing rotation/velocity controlled by MappyWall",
+  "hud.mappywall.aggressive_active": "Aggressive mode: player facing/velocity are controlled",
   "hud.mappywall.waiting_for_chunk": "Waiting for chunks ahead",
   "hud.mappywall.planning_path": "Planning path in background",
   "message.mappywall.started": "MappyWall run started.",
@@ -87,6 +88,11 @@
   "message.mappywall.auto_walk_stuck": "AUTO_WALK detected a collision or stalled movement and paused.",
   "message.mappywall.auto_walk_no_path": "AUTO_WALK could not find a complete path and is trying local recovery.",
   "message.mappywall.auto_walk_no_place_block": "AUTO_WALK needs to bridge, but no allowed block is available. Cobblestone and dirt are allowed by default.",
+  "message.mappywall.auto_walk_too_many_breaks": "AUTO_WALK has mined 9 blocks for this target and paused to avoid tunneling into terrain.",
+  "message.mappywall.fill_requires_zoomed_map": "Fill-current-map needs a map zoomed to scale %s. Zoom it in a cartography table, then resume.",
+  "message.mappywall.auto_zoom_open_cartography": "Aggressive auto-zoom needs an open cartography table and paper. Target scale: %s.",
+  "message.mappywall.auto_zoom_no_paper": "Aggressive auto-zoom needs paper, but none was found in the table or inventory.",
+  "message.mappywall.auto_zoom_no_bound_map": "Aggressive auto-zoom could not find the map bound to the current wall cell.",
   "message.mappywall.emergency_stop": "MappyWall emergency-stopped and paused the job.",
   "message.mappywall.auto_disabled": "Automatic movement is disabled in this MVP."
 }

@@ -57,9 +57,10 @@
   "hud.mappywall.scale_needs_existing_map": "空地图会先开成比例尺 0，之后请自行合成放大",
   "hud.mappywall.scale_empty_maps_open_as_zero": "将自动开 0 级地图，之后请自行合成到目标比例尺",
   "hud.mappywall.fill_waypoint": "开图后跑图点：%s/%s",
+  "hud.mappywall.map_explored": "当前地图探索度：%s%%",
   "hud.mappywall.auto_walk_active": "自动走路已开启，按 K 急停",
   "hud.mappywall.auto_elytra_active": "鞘翅+烟花已开启，按 K 急停",
-  "hud.mappywall.aggressive_active": "激进自动化：服务端朝向/速度由模组接管",
+  "hud.mappywall.aggressive_active": "激进模式：当前玩家朝向/速度已被接管",
   "hud.mappywall.waiting_for_chunk": "等待前方区块加载",
   "hud.mappywall.planning_path": "正在后台计算路径",
   "message.mappywall.started": "MappyWall 跑图任务已开始。",
@@ -87,6 +88,11 @@
   "message.mappywall.auto_walk_stuck": "AUTO_WALK 检测到卡住或碰撞，已暂停。",
   "message.mappywall.auto_walk_no_path": "AUTO_WALK 暂时找不到完整路径，正在尝试局部推进。",
   "message.mappywall.auto_walk_no_place_block": "AUTO_WALK 需要搭路，但背包里没有允许使用的方块（默认允许圆石和泥土），已暂停。",
+  "message.mappywall.auto_walk_too_many_breaks": "AUTO_WALK 已为当前目标挖掘 9 个方块，已暂停以避免向山体内继续挖掘。",
+  "message.mappywall.fill_requires_zoomed_map": "先跑当前图需要已合成到比例尺 %s 的地图；请先在制图台放大后继续。",
+  "message.mappywall.auto_zoom_open_cartography": "激进模式自动放大需要先打开制图台，并准备纸；目标比例尺为 %s。",
+  "message.mappywall.auto_zoom_no_paper": "激进模式自动放大需要纸，背包或制图台里没有找到纸。",
+  "message.mappywall.auto_zoom_no_bound_map": "激进模式自动放大找不到当前墙格绑定的地图。",
   "message.mappywall.emergency_stop": "MappyWall 已急停并暂停任务。",
   "message.mappywall.auto_disabled": "MVP 阶段未启用自动移动。"
 }
