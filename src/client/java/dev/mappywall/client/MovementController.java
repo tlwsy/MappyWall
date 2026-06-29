@@ -17,6 +17,7 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.FoodComponent;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.vehicle.AbstractBoatEntity;
 import net.minecraft.item.BlockItem;
@@ -24,8 +25,10 @@ import net.minecraft.item.BoatItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
+import net.minecraft.network.packet.c2s.play.BoatPaddleStateC2SPacket;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import net.minecraft.network.packet.c2s.play.VehicleMoveC2SPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
@@ -55,6 +58,12 @@ public final class MovementController {
     private static final double AGGRESSIVE_SWIM_SPEED = 0.18;
     private static final double AGGRESSIVE_SNEAK_SPEED = 0.12;
     private static final double AGGRESSIVE_JUMP_VELOCITY = 0.42;
+    private static final double BOAT_DRIVE_SPEED = 0.36;
+    private static final int ELYTRA_LAUNCH_VERTICAL_CLEARANCE = 14;
+    private static final int ELYTRA_LAUNCH_CORRIDOR_DISTANCE = 28;
+    private static final int ELYTRA_CLIMB_OBSTACLE_SCAN = 34;
+    private static final double ELYTRA_NORMAL_CLIMB_ANGLE = 24.0;
+    private static final double ELYTRA_STEEP_CLIMB_ANGLE = 48.0;
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
@@ -164,6 +173,7 @@ public final class MovementController {
         releaseMovementKeys(client);
         releaseUseKey(client);
         releaseAttackKey(client);
+        releaseVehicleControls(client);
         breakingBlock = null;
         cancelPendingPlan();
     }
@@ -296,6 +306,12 @@ public final class MovementController {
             BlockPos navigationTarget,
             AutomationStyle style
     ) {
+        if (!hasElytraLaunchSpace(client, player, navigationTarget)) {
+            release(client);
+            resetProgress();
+            return MovementResult.pause(Text.translatable("message.mappywall.auto_elytra_no_launch_space"));
+        }
+
         if (style == AutomationStyle.AGGRESSIVE) {
             if (player.isOnGround()) {
                 applyAggressiveGroundVelocity(
@@ -351,11 +367,12 @@ public final class MovementController {
             double dx,
             double dz,
             double horizontalDistance,
-            boolean climbing
+            boolean climbing,
+            boolean climbObstacleAhead
     ) {
-        float[] look = elytraControlLook(player, dx, dz, horizontalDistance, climbing);
+        float[] look = elytraControlLook(player, dx, dz, horizontalDistance, climbing, climbObstacleAhead);
         sendServerLook(player, look[0], look[1]);
-        applyAggressiveElytraVelocity(player, dx, dz, horizontalDistance, climbing);
+        applyAggressiveElytraVelocity(player, dx, dz, horizontalDistance, climbing, climbObstacleAhead);
 
         Vec3d velocity = player.getVelocity();
         double horizontalSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
@@ -386,17 +403,20 @@ public final class MovementController {
             double dx,
             double dz,
             double horizontalDistance,
-            boolean climbing
+            boolean climbing,
+            boolean climbObstacleAhead
     ) {
         if (horizontalDistance <= 0.0001) {
             return;
         }
         Vec3d current = player.getVelocity();
-        double speed = horizontalDistance < 48.0 ? AGGRESSIVE_ELYTRA_APPROACH_SPEED : AGGRESSIVE_ELYTRA_CRUISE_SPEED;
+        double speed = climbObstacleAhead
+                ? AGGRESSIVE_ELYTRA_APPROACH_SPEED * 0.55
+                : horizontalDistance < 48.0 ? AGGRESSIVE_ELYTRA_APPROACH_SPEED : AGGRESSIVE_ELYTRA_CRUISE_SPEED;
         double dirX = dx / horizontalDistance;
         double dirZ = dz / horizontalDistance;
         double yVelocity = climbing
-                ? Math.max(current.y, AGGRESSIVE_ELYTRA_CLIMB_SPEED)
+                ? Math.max(current.y, climbObstacleAhead ? AGGRESSIVE_ELYTRA_MAX_Y_SPEED : AGGRESSIVE_ELYTRA_CLIMB_SPEED)
                 : current.y * 0.92;
         yVelocity = Math.max(-0.42, Math.min(AGGRESSIVE_ELYTRA_MAX_Y_SPEED, yVelocity));
         player.setVelocity(dirX * speed, yVelocity, dirZ * speed);
@@ -414,12 +434,22 @@ public final class MovementController {
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
         double cruiseAltitude = elytraCruiseAltitude(client);
         boolean climbing = player.getY() < cruiseAltitude - ELYTRA_CLIMB_MARGIN;
+        boolean climbObstacleAhead = climbing && climbPathBlocked(client, player, dx, dz, ELYTRA_CLIMB_OBSTACLE_SCAN, false);
         if (style == AutomationStyle.AGGRESSIVE) {
-            return flyAggressiveElytraToward(client, player, navigationTarget, dx, dz, horizontalDistance, climbing);
+            return flyAggressiveElytraToward(
+                    client,
+                    player,
+                    navigationTarget,
+                    dx,
+                    dz,
+                    horizontalDistance,
+                    climbing,
+                    climbObstacleAhead
+            );
         }
 
         if (climbing) {
-            faceElytraClimb(player, dx, dz, style);
+            faceElytraClimb(player, dx, dz, style, climbObstacleAhead);
         } else {
             faceElytra(player, dx, dz, horizontalDistance, style);
         }
@@ -452,8 +482,13 @@ public final class MovementController {
     }
 
     private MovementResult swimOrBoat(MinecraftClient client, ClientPlayerEntity player, LocalPathPlanner.PathStep waypoint) {
-        if (!player.hasVehicle()) {
-            AutomationStyle style = currentAutomationStyle();
+        AutomationStyle style = currentAutomationStyle();
+        if (player.hasVehicle()) {
+            Entity vehicle = player.getVehicle();
+            if (vehicle instanceof AbstractBoatEntity boat) {
+                return driveBoatToward(client, player, boat, waypoint, style);
+            }
+        } else {
             if (tryBoardNearbyBoat(client, player, waypoint.pos(), style)) {
                 return MovementResult.active(pathSnapshot());
             }
@@ -463,6 +498,42 @@ public final class MovementController {
             }
         }
         return moveToward(client, player, waypoint, true);
+    }
+
+    private MovementResult driveBoatToward(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            AbstractBoatEntity boat,
+            LocalPathPlanner.PathStep waypoint,
+            AutomationStyle style
+    ) {
+        double dx = waypoint.pos().getX() + 0.5 - boat.getX();
+        double dz = waypoint.pos().getZ() + 0.5 - boat.getZ();
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        if (distance <= 0.001) {
+            return MovementResult.active(pathSnapshot());
+        }
+
+        double dirX = dx / distance;
+        double dirZ = dz / distance;
+        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        boat.setYaw(yaw);
+        boat.setPitch(0.0F);
+        boat.setInputs(false, false, true, false);
+        boat.setPaddlesMoving(true, true);
+        sendBoatPaddles(client, true, true);
+        sendPlayerInput(client, true, false, false, false, false, false, true);
+
+        if (style == AutomationStyle.AGGRESSIVE) {
+            Vec3d velocity = new Vec3d(dirX * BOAT_DRIVE_SPEED, boat.getVelocity().y, dirZ * BOAT_DRIVE_SPEED);
+            boat.setVelocity(velocity);
+            boat.setPosition(boat.getX() + velocity.x, boat.getY(), boat.getZ() + velocity.z);
+            sendServerLook(player, yaw, 0.0F);
+            if (player.networkHandler != null) {
+                player.networkHandler.sendPacket(VehicleMoveC2SPacket.fromVehicle(boat));
+            }
+        }
+        return MovementResult.active(pathSnapshot());
     }
 
     private AutomationStyle currentAutomationStyle() {
@@ -611,7 +682,7 @@ public final class MovementController {
             face(
                     player,
                     waterPos.getX() + 0.5 - player.getX(),
-                    waterPos.getY() + 0.2 - player.getEyeY(),
+                    waterPos.getY() + 0.75 - player.getEyeY(),
                     waterPos.getZ() + 0.5 - player.getZ(),
                     true
             );
@@ -668,7 +739,7 @@ public final class MovementController {
             BlockPos waterPos,
             AutomationStyle style
     ) {
-        Vec3d hit = Vec3d.ofCenter(waterPos).add(0.0, -0.15, 0.0);
+        Vec3d hit = Vec3d.ofCenter(waterPos).add(0.0, 0.25, 0.0);
         if (style == AutomationStyle.AGGRESSIVE) {
             float oldYaw = player.getYaw();
             float oldPitch = player.getPitch();
@@ -752,15 +823,18 @@ public final class MovementController {
             double dx,
             double dz,
             double horizontalDistance,
-            boolean climbing
+            boolean climbing,
+            boolean climbObstacleAhead
     ) {
         float yaw = player.getYaw();
         if (dx * dx + dz * dz > 0.0001) {
             yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         }
         float pitch;
-        if (climbing) {
-            pitch = -24.0F;
+        if (climbObstacleAhead) {
+            pitch = (float) -ELYTRA_STEEP_CLIMB_ANGLE;
+        } else if (climbing) {
+            pitch = (float) -ELYTRA_NORMAL_CLIMB_ANGLE;
         } else if (horizontalDistance < 32.0) {
             pitch = 12.0F;
         } else {
@@ -802,7 +876,7 @@ public final class MovementController {
         player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -8.0F, 8.0F));
     }
 
-    private void faceElytraClimb(ClientPlayerEntity player, double dx, double dz, AutomationStyle style) {
+    private void faceElytraClimb(ClientPlayerEntity player, double dx, double dz, AutomationStyle style, boolean climbObstacleAhead) {
         if (dx * dx + dz * dz > 0.0001) {
             float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
             float maxTurn = style == AutomationStyle.AGGRESSIVE ? 22.0F : 12.0F;
@@ -810,7 +884,8 @@ public final class MovementController {
             player.setYaw(player.getYaw() + MathHelper.clamp(yawDelta, -maxTurn, maxTurn));
         }
 
-        float pitchDelta = MathHelper.wrapDegrees(-24.0F - player.getPitch());
+        float targetPitch = (float) (climbObstacleAhead ? -ELYTRA_STEEP_CLIMB_ANGLE : -ELYTRA_NORMAL_CLIMB_ANGLE);
+        float pitchDelta = MathHelper.wrapDegrees(targetPitch - player.getPitch());
         player.setPitch(player.getPitch() + MathHelper.clamp(pitchDelta, -10.0F, 10.0F));
     }
 
@@ -819,6 +894,79 @@ public final class MovementController {
             return ELYTRA_CRUISE_ALTITUDE;
         }
         return Math.min(ELYTRA_CRUISE_ALTITUDE, client.world.getTopYInclusive() - 24.0);
+    }
+
+    private boolean hasElytraLaunchSpace(MinecraftClient client, ClientPlayerEntity player, BlockPos navigationTarget) {
+        if (client.world == null) {
+            return false;
+        }
+        if (hasVerticalFlightClearance(client, player)) {
+            return true;
+        }
+        double dx = navigationTarget.getX() + 0.5 - player.getX();
+        double dz = navigationTarget.getZ() + 0.5 - player.getZ();
+        return !climbPathBlocked(client, player, dx, dz, ELYTRA_LAUNCH_CORRIDOR_DISTANCE, false)
+                || !climbPathBlocked(client, player, dx, dz, ELYTRA_LAUNCH_CORRIDOR_DISTANCE, true);
+    }
+
+    private boolean hasVerticalFlightClearance(MinecraftClient client, ClientPlayerEntity player) {
+        BlockPos base = player.getBlockPos();
+        for (int yOffset = 1; yOffset <= ELYTRA_LAUNCH_VERTICAL_CLEARANCE; yOffset++) {
+            BlockPos center = base.up(yOffset);
+            if (!isFlightSpaceClear(client, center)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean climbPathBlocked(
+            MinecraftClient client,
+            ClientPlayerEntity player,
+            double dx,
+            double dz,
+            int scanDistance,
+            boolean steep
+    ) {
+        if (client.world == null) {
+            return true;
+        }
+        double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+        if (horizontalDistance <= 0.0001) {
+            return false;
+        }
+        double dirX = dx / horizontalDistance;
+        double dirZ = dz / horizontalDistance;
+        double angle = Math.toRadians(steep ? ELYTRA_STEEP_CLIMB_ANGLE : ELYTRA_NORMAL_CLIMB_ANGLE);
+        double horizontalStep = Math.cos(angle);
+        double verticalStep = Math.sin(angle);
+        Vec3d origin = player.getEyePos();
+        for (int step = 3; step <= scanDistance; step += 2) {
+            BlockPos sample = BlockPos.ofFloored(
+                    origin.x + dirX * horizontalStep * step,
+                    origin.y + verticalStep * step,
+                    origin.z + dirZ * horizontalStep * step
+            );
+            if (!isFlightSpaceClear(client, sample)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isFlightSpaceClear(MinecraftClient client, BlockPos center) {
+        if (client.world == null) {
+            return false;
+        }
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                BlockPos pos = center.add(dx, 0, dz);
+                if (!client.world.getBlockState(pos).getCollisionShape(client.world, pos).isEmpty()) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private boolean hasEquippedElytra(ClientPlayerEntity player) {
@@ -1153,6 +1301,7 @@ public final class MovementController {
         if (!player.hasVehicle() || dismountCooldown > 0) {
             return false;
         }
+        releaseVehicleControls(client);
         releaseMovementKeys(client);
         releaseAttackKey(client);
         releaseUseKey(client);
@@ -1214,6 +1363,25 @@ public final class MovementController {
         client.player.networkHandler.sendPacket(new PlayerInputC2SPacket(
                 new PlayerInput(forward, back, left, right, jump, sneak, sprint)
         ));
+    }
+
+    private void sendBoatPaddles(MinecraftClient client, boolean left, boolean right) {
+        if (client.player == null) {
+            return;
+        }
+        client.player.networkHandler.sendPacket(new BoatPaddleStateC2SPacket(left, right));
+    }
+
+    private void releaseVehicleControls(MinecraftClient client) {
+        if (client.player == null || !client.player.hasVehicle()) {
+            return;
+        }
+        Entity vehicle = client.player.getVehicle();
+        if (vehicle instanceof AbstractBoatEntity boat) {
+            boat.setInputs(false, false, false, false);
+            boat.setPaddlesMoving(false, false);
+            sendBoatPaddles(client, false, false);
+        }
     }
 
     private float faceMovement(ClientPlayerEntity player, double dx, double dz) {

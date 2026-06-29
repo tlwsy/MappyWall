@@ -83,6 +83,7 @@
   "message.mappywall.auto_elytra_aggressive_enabled": "Aggressive Elytra + fireworks enabled: MappyWall sends server-facing rotation, corrects velocity, and uses fireworks. Press K to stop.",
   "message.mappywall.auto_elytra_no_elytra": "Elytra + fireworks mode requires Elytra equipped in the chest slot. Paused.",
   "message.mappywall.auto_elytra_no_firework": "Elytra + fireworks mode requires firework rockets. Paused.",
+  "message.mappywall.auto_elytra_no_launch_space": "This position does not have enough Elytra launch/climb space. Paused.",
   "message.mappywall.auto_walk_stuck": "AUTO_WALK detected a collision or stalled movement and paused.",
   "message.mappywall.auto_walk_no_path": "AUTO_WALK could not find a complete path and is trying local recovery.",
   "message.mappywall.auto_walk_no_place_block": "AUTO_WALK needs to bridge, but no allowed block is available. Cobblestone and dirt are allowed by default.",

@@ -83,6 +83,7 @@
   "message.mappywall.auto_elytra_aggressive_enabled": "鞘翅+烟花激进模式已启用：模组会发送服务端朝向、校正速度并使用烟花，按 K 急停。",
   "message.mappywall.auto_elytra_no_elytra": "鞘翅+烟花模式需要胸甲栏装备鞘翅，已暂停。",
   "message.mappywall.auto_elytra_no_firework": "鞘翅+烟花模式需要烟花火箭，已暂停。",
+  "message.mappywall.auto_elytra_no_launch_space": "当前位置没有足够的鞘翅起飞/爬升空间，已暂停。",
   "message.mappywall.auto_walk_stuck": "AUTO_WALK 检测到卡住或碰撞，已暂停。",
   "message.mappywall.auto_walk_no_path": "AUTO_WALK 暂时找不到完整路径，正在尝试局部推进。",
   "message.mappywall.auto_walk_no_place_block": "AUTO_WALK 需要搭路，但背包里没有允许使用的方块（默认允许圆石和泥土），已暂停。",
