@@ -8,7 +8,7 @@
     "MappyWall contributors"
   ],
   "contact": {},
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "icon": "assets/mappywall/icon.png",
   "environment": "client",
   "entrypoints": {
