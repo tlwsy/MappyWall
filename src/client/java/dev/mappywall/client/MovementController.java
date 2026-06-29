@@ -47,11 +47,14 @@ public final class MovementController {
     private static final float MOVE_ALIGNMENT_DEGREES = 75.0F;
     private static final float SPRINT_ALIGNMENT_DEGREES = 35.0F;
     private static final float MOVEMENT_TURN_DEGREES = 12.0F;
-    private static final double AGGRESSIVE_INPUT_THRESHOLD = 0.28;
     private static final double AGGRESSIVE_ELYTRA_CRUISE_SPEED = 1.18;
     private static final double AGGRESSIVE_ELYTRA_APPROACH_SPEED = 0.72;
     private static final double AGGRESSIVE_ELYTRA_CLIMB_SPEED = 0.56;
     private static final double AGGRESSIVE_ELYTRA_MAX_Y_SPEED = 0.72;
+    private static final double AGGRESSIVE_GROUND_SPEED = 0.31;
+    private static final double AGGRESSIVE_SWIM_SPEED = 0.18;
+    private static final double AGGRESSIVE_SNEAK_SPEED = 0.12;
+    private static final double AGGRESSIVE_JUMP_VELOCITY = 0.42;
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
@@ -217,7 +220,7 @@ public final class MovementController {
         double targetX = pos.getX() + 0.5;
         double targetZ = pos.getZ() + 0.5;
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
-            setDirectionalMovementKeys(
+            applyAggressiveGroundVelocity(
                     client,
                     player,
                     targetX - player.getX(),
@@ -238,7 +241,7 @@ public final class MovementController {
     private MovementResult recoverTowardTarget(MinecraftClient client, ClientPlayerEntity player, RouteStep target) {
         BlockPos navigationTarget = navigationTarget(player, target);
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
-            setDirectionalMovementKeys(
+            applyAggressiveGroundVelocity(
                     client,
                     player,
                     navigationTarget.getX() + 0.5 - player.getX(),
@@ -295,7 +298,7 @@ public final class MovementController {
     ) {
         if (style == AutomationStyle.AGGRESSIVE) {
             if (player.isOnGround()) {
-                setDirectionalMovementKeys(
+                applyAggressiveGroundVelocity(
                         client,
                         player,
                         navigationTarget.getX() + 0.5 - player.getX(),
@@ -1103,7 +1106,7 @@ public final class MovementController {
         sendPlayerInput(client, false, false, false, false, false, false, false);
     }
 
-    private void setDirectionalMovementKeys(
+    private void applyAggressiveGroundVelocity(
             MinecraftClient client,
             ClientPlayerEntity player,
             double dx,
@@ -1112,37 +1115,38 @@ public final class MovementController {
             boolean sneak,
             boolean sprint
     ) {
-        double length = Math.sqrt(dx * dx + dz * dz);
-        if (length <= 0.0001) {
-            setMovementKeys(client, false, false, false, false, jump, sneak, false);
+        releaseMovementKeys(client);
+        releaseAttackKey(client);
+
+        double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+        if (horizontalDistance <= 0.0001) {
+            sendPlayerInput(client, false, false, false, false, jump, sneak, false);
             return;
         }
 
-        double yawRadians = Math.toRadians(player.getYaw());
-        double forwardX = -Math.sin(yawRadians);
-        double forwardZ = Math.cos(yawRadians);
-        double leftX = Math.cos(yawRadians);
-        double leftZ = Math.sin(yawRadians);
-        double targetX = dx / length;
-        double targetZ = dz / length;
-        double forwardDot = targetX * forwardX + targetZ * forwardZ;
-        double leftDot = targetX * leftX + targetZ * leftZ;
-
-        boolean forward = forwardDot > AGGRESSIVE_INPUT_THRESHOLD;
-        boolean back = forwardDot < -AGGRESSIVE_INPUT_THRESHOLD;
-        boolean left = leftDot > AGGRESSIVE_INPUT_THRESHOLD;
-        boolean right = leftDot < -AGGRESSIVE_INPUT_THRESHOLD;
-        if (!forward && !back && !left && !right) {
-            if (Math.abs(forwardDot) >= Math.abs(leftDot)) {
-                forward = forwardDot >= 0.0;
-                back = !forward;
-            } else {
-                left = leftDot >= 0.0;
-                right = !left;
-            }
+        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        sendServerLook(player, yaw, 0.0F);
+        double dirX = dx / horizontalDistance;
+        double dirZ = dz / horizontalDistance;
+        double speed;
+        if (sneak) {
+            speed = AGGRESSIVE_SNEAK_SPEED;
+        } else if (player.isTouchingWater()) {
+            speed = AGGRESSIVE_SWIM_SPEED;
+        } else {
+            speed = sprint ? AGGRESSIVE_GROUND_SPEED : AGGRESSIVE_GROUND_SPEED * 0.72;
         }
 
-        setMovementKeys(client, forward, back, left, right, jump, sneak, sprint && forward && !back);
+        Vec3d current = player.getVelocity();
+        double velocityY = current.y;
+        boolean shouldJump = jump && (player.isOnGround() || player.horizontalCollision || player.isTouchingWater());
+        if (shouldJump) {
+            velocityY = player.isTouchingWater() ? Math.max(current.y, 0.08) : Math.max(current.y, AGGRESSIVE_JUMP_VELOCITY);
+        }
+
+        player.setSprinting(sprint && !sneak);
+        player.setVelocity(dirX * speed, velocityY, dirZ * speed);
+        sendPlayerInput(client, true, false, false, false, shouldJump, sneak, sprint && !sneak);
     }
 
     private boolean tryDismountVehicle(MinecraftClient client, ClientPlayerEntity player) {
