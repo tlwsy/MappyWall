@@ -5,6 +5,7 @@ import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.RunMode;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -68,6 +69,10 @@ public final class MovementController {
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
+    private static final int LOCAL_STALL_TICKS = 40;
+    private static final int LOOP_STALL_TICKS = 100;
+    private static final double LOCAL_STALL_AREA_BLOCKS = 1.0;
+    private static final double LOOP_STALL_AREA_BLOCKS = 4.0;
     private static final int REPLAN_INTERVAL_TICKS = 50;
     private static final int RECOVERY_TICKS = 35;
     private static final int PLACE_COOLDOWN_TICKS = 8;
@@ -89,6 +94,7 @@ public final class MovementController {
 
     private final AutoNavigationConfig config = AutoNavigationConfig.defaults();
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
+    private final ArrayDeque<MovementSample> movementSamples = new ArrayDeque<>();
 
     private List<LocalPathPlanner.PathStep> path = List.of();
     private int pathIndex;
@@ -115,6 +121,7 @@ public final class MovementController {
     private boolean movementKeysHeld;
     private boolean useKeyHeld;
     private boolean attackKeyHeld;
+    private int movementSampleTick;
 
     public MovementResult tick(MinecraftClient client, MapWallSave save, RouteStep target) {
         if (client.world == null || client.player == null || target == null) {
@@ -180,6 +187,7 @@ public final class MovementController {
         releaseAttackKey(client);
         releaseVehicleControls(client);
         breakingBlock = null;
+        movementSamples.clear();
         cancelPendingPlan();
     }
 
@@ -1121,11 +1129,68 @@ public final class MovementController {
         lastWaypointDistance = waypointDistance;
         lastPlayerPos = playerPos;
 
-        if (player.horizontalCollision || stuckTicks >= STUCK_TICKS_LIMIT) {
-            replanCooldown = 0;
-            stuckTicks = 0;
-            recoveryTicks = RECOVERY_TICKS;
+        boolean movementAction = isMovementAction(waypoint.action());
+        if (movementAction) {
+            recordMovementSample(playerPos);
+        } else {
+            movementSamples.clear();
         }
+
+        if (player.horizontalCollision
+                || stuckTicks >= STUCK_TICKS_LIMIT
+                || (movementAction && isTrappedInRecentArea(LOCAL_STALL_TICKS, LOCAL_STALL_AREA_BLOCKS))
+                || (movementAction && isTrappedInRecentArea(LOOP_STALL_TICKS, LOOP_STALL_AREA_BLOCKS))) {
+            forceLocalReplan();
+        }
+    }
+
+    private boolean isMovementAction(LocalPathPlanner.StepAction action) {
+        return action == LocalPathPlanner.StepAction.WALK
+                || action == LocalPathPlanner.StepAction.JUMP
+                || action == LocalPathPlanner.StepAction.DROP
+                || action == LocalPathPlanner.StepAction.SWIM;
+    }
+
+    private void recordMovementSample(Vec3d playerPos) {
+        movementSamples.addLast(new MovementSample(++movementSampleTick, playerPos.x, playerPos.z));
+        while (!movementSamples.isEmpty()
+                && movementSampleTick - movementSamples.getFirst().tick() > LOOP_STALL_TICKS) {
+            movementSamples.removeFirst();
+        }
+    }
+
+    private boolean isTrappedInRecentArea(int ticks, double maxSpan) {
+        if (movementSamples.size() < ticks) {
+            return false;
+        }
+
+        MovementSample newest = movementSamples.getLast();
+        double minX = newest.x();
+        double maxX = newest.x();
+        double minZ = newest.z();
+        double maxZ = newest.z();
+        int count = 0;
+        var iterator = movementSamples.descendingIterator();
+        while (iterator.hasNext() && count < ticks) {
+            MovementSample sample = iterator.next();
+            minX = Math.min(minX, sample.x());
+            maxX = Math.max(maxX, sample.x());
+            minZ = Math.min(minZ, sample.z());
+            maxZ = Math.max(maxZ, sample.z());
+            count++;
+        }
+        return count >= ticks && Math.max(maxX - minX, maxZ - minZ) <= maxSpan;
+    }
+
+    private void forceLocalReplan() {
+        cancelPendingPlan();
+        path = List.of();
+        pathIndex = 0;
+        replanCooldown = 0;
+        stuckTicks = 0;
+        recoveryTicks = RECOVERY_TICKS;
+        breakingBlock = null;
+        movementSamples.clear();
     }
 
     private double squaredHorizontalDistance(ClientPlayerEntity player, BlockPos pos) {
@@ -1530,6 +1595,8 @@ public final class MovementController {
         lastPlayerPos = Vec3d.ZERO;
         targetSignature = null;
         breakingBlock = null;
+        movementSamples.clear();
+        movementSampleTick = 0;
         recoveryTicks = 0;
         placeCooldown = 0;
         boatCooldown = 0;
@@ -1545,6 +1612,8 @@ public final class MovementController {
         if (!signature.equals(breakBudgetTargetSignature)) {
             breakBudgetTargetSignature = signature;
             breakActionsForTarget = 0;
+            movementSamples.clear();
+            movementSampleTick = 0;
         }
     }
 
@@ -1587,6 +1656,9 @@ public final class MovementController {
 
     private int interiorMax(int min, int max) {
         return max - min + 1 <= REGION_ENTRY_INSET_BLOCKS * 2 ? max : max - REGION_ENTRY_INSET_BLOCKS;
+    }
+
+    private record MovementSample(int tick, double x, double z) {
     }
 
     public record MovementResult(boolean moving, boolean waitingForChunk, Text pauseMessage, List<BlockPos> path) {
