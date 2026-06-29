@@ -7,7 +7,11 @@
   "authors": [
     "MappyWall contributors"
   ],
-  "contact": {},
+  "contact": {
+    "homepage": "https://github.com/tlwsy/MappyWall",
+    "issues": "https://github.com/tlwsy/MappyWall/issues",
+    "sources": "https://github.com/tlwsy/MappyWall"
+  },
   "license": "GPL-3.0-or-later",
   "icon": "assets/mappywall/icon.png",
   "environment": "client",
