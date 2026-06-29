@@ -75,7 +75,7 @@ public final class MapOpenController {
         if (hotbarSlot < 0) {
             int inventorySlot = scanner.findInventoryEmptyMap(player);
             if (inventorySlot >= 0) {
-                moveInventoryMapToHotbar(client, inventorySlot, player.getInventory().getSelectedSlot());
+                moveInventoryMapToHotbar(client, inventorySlot, MinecraftCompat.selectedSlot(player.getInventory()));
                 cooldownTicks = 8;
                 return MapOpenAttempt.none();
             }
@@ -88,7 +88,7 @@ public final class MapOpenController {
             return MapOpenAttempt.none();
         }
 
-        player.getInventory().setSelectedSlot(hotbarSlot);
+        MinecraftCompat.setSelectedSlot(player.getInventory(), hotbarSlot);
         ItemStack before = player.getMainHandStack();
         if (!before.isOf(Items.MAP)) {
             cooldownTicks = 8;
@@ -153,7 +153,7 @@ public final class MapOpenController {
         if (client.player == null || pendingOpening == null) {
             return null;
         }
-        ItemStack stack = client.player.getInventory().getMainStacks().get(pendingOpening.hotbarSlot());
+        ItemStack stack = MinecraftCompat.mainStacks(client.player.getInventory()).get(pendingOpening.hotbarSlot());
         if (!stack.isOf(Items.FILLED_MAP)) {
             return null;
         }

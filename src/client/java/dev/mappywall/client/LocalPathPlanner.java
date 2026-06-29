@@ -452,7 +452,8 @@ public final class LocalPathPlanner {
             int minZ = start.getZ() - MAX_HORIZONTAL_RANGE;
             int maxZ = start.getZ() + MAX_HORIZONTAL_RANGE;
             int minY = Math.max(world.getBottomY(), start.getY() - MAX_VERTICAL_RANGE - MAX_DROP - 2);
-            int maxY = Math.min(world.getTopYInclusive(), start.getY() + MAX_VERTICAL_RANGE + 2);
+            int topYInclusive = MinecraftCompat.topYInclusive(world);
+            int maxY = Math.min(topYInclusive, start.getY() + MAX_VERTICAL_RANGE + 2);
             Map<Long, Cell> cells = new HashMap<>();
             BlockPos.Mutable mutable = new BlockPos.Mutable();
 
@@ -486,7 +487,7 @@ public final class LocalPathPlanner {
                     minZ,
                     maxZ,
                     world.getBottomY(),
-                    world.getTopYInclusive(),
+                    topYInclusive,
                     Map.copyOf(cells)
             );
         }

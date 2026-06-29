@@ -20,21 +20,18 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EquipmentSlot;
-import net.minecraft.entity.vehicle.AbstractBoatEntity;
+import net.minecraft.entity.vehicle.BoatEntity;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.BoatItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
 import net.minecraft.network.packet.c2s.play.BoatPaddleStateC2SPacket;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.network.packet.c2s.play.VehicleMoveC2SPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
-import net.minecraft.util.PlayerInput;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
@@ -313,7 +310,7 @@ public final class MovementController {
             return MovementResult.pause(Text.translatable("message.mappywall.auto_elytra_no_elytra"));
         }
 
-        if (!player.isGliding()) {
+        if (!MinecraftCompat.isGliding(player)) {
             return startOrPrepareElytra(client, player, navigationTarget, save.project().automationStyle());
         }
 
@@ -351,7 +348,7 @@ public final class MovementController {
                         player,
                         ClientCommandC2SPacket.Mode.START_FALL_FLYING
                 ));
-                player.startGliding();
+                MinecraftCompat.startGliding(player);
                 elytraStartCooldown = ELYTRA_START_COOLDOWN_TICKS;
             }
             return MovementResult.active(List.of(navigationTarget));
@@ -374,7 +371,7 @@ public final class MovementController {
                     player,
                     ClientCommandC2SPacket.Mode.START_FALL_FLYING
             ));
-            player.startGliding();
+            MinecraftCompat.startGliding(player);
             elytraStartCooldown = ELYTRA_START_COOLDOWN_TICKS;
         }
         return MovementResult.active(List.of(navigationTarget));
@@ -505,7 +502,7 @@ public final class MovementController {
         AutomationStyle style = currentAutomationStyle();
         if (player.hasVehicle()) {
             Entity vehicle = player.getVehicle();
-            if (vehicle instanceof AbstractBoatEntity boat) {
+            if (vehicle instanceof BoatEntity boat) {
                 return driveBoatToward(client, player, boat, waypoint, style);
             }
         } else {
@@ -523,7 +520,7 @@ public final class MovementController {
     private MovementResult driveBoatToward(
             MinecraftClient client,
             ClientPlayerEntity player,
-            AbstractBoatEntity boat,
+            BoatEntity boat,
             LocalPathPlanner.PathStep waypoint,
             AutomationStyle style
     ) {
@@ -539,8 +536,7 @@ public final class MovementController {
         float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         boat.setYaw(yaw);
         boat.setPitch(0.0F);
-        boat.setInputs(false, false, true, false);
-        boat.setPaddlesMoving(true, true);
+        MinecraftCompat.setBoatControls(boat, true, true, true);
         sendBoatPaddles(client, true, true);
         sendPlayerInput(client, true, false, false, false, false, false, true);
 
@@ -809,12 +805,7 @@ public final class MovementController {
     }
 
     private void sendServerLook(ClientPlayerEntity player, float yaw, float pitch) {
-        player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(
-                yaw,
-                pitch,
-                player.isOnGround(),
-                player.horizontalCollision
-        ));
+        MinecraftCompat.sendLookAndOnGround(player, yaw, pitch);
     }
 
     private void sendServerLookAt(ClientPlayerEntity player, Vec3d target) {
@@ -832,15 +823,15 @@ public final class MovementController {
             return false;
         }
         Box searchBox = new Box(waterPos).expand(style == AutomationStyle.AGGRESSIVE ? 6.0 : 3.0);
-        List<AbstractBoatEntity> boats = client.world.getEntitiesByClass(
-                AbstractBoatEntity.class,
+        List<BoatEntity> boats = client.world.getEntitiesByClass(
+                BoatEntity.class,
                 searchBox,
                 boat -> boat.isAlive() && !boat.hasPassengers()
         );
         if (boats.isEmpty()) {
             return false;
         }
-        AbstractBoatEntity boat = boats.stream()
+        BoatEntity boat = boats.stream()
                 .min((left, right) -> Double.compare(left.squaredDistanceTo(player), right.squaredDistanceTo(player)))
                 .orElse(null);
         if (boat == null) {
@@ -934,7 +925,7 @@ public final class MovementController {
         if (client.world == null) {
             return ELYTRA_CRUISE_ALTITUDE;
         }
-        return Math.min(ELYTRA_CRUISE_ALTITUDE, client.world.getTopYInclusive() - 24.0);
+        return Math.min(ELYTRA_CRUISE_ALTITUDE, MinecraftCompat.topYInclusive(client.world) - 24.0);
     }
 
     private boolean hasElytraLaunchSpace(MinecraftClient client, ClientPlayerEntity player, BlockPos navigationTarget) {
@@ -1015,8 +1006,9 @@ public final class MovementController {
     }
 
     private int findFirework(ClientPlayerEntity player) {
-        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
-            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
+        for (int slot = 0; slot < stacks.size(); slot++) {
+            ItemStack stack = stacks.get(slot);
             if (stack.isOf(Items.FIREWORK_ROCKET)) {
                 return slot;
             }
@@ -1200,8 +1192,9 @@ public final class MovementController {
     }
 
     private int findAllowedFood(ClientPlayerEntity player) {
-        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
-            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
+        for (int slot = 0; slot < stacks.size(); slot++) {
+            ItemStack stack = stacks.get(slot);
             FoodComponent food = stack.get(DataComponentTypes.FOOD);
             if (food == null) {
                 continue;
@@ -1215,8 +1208,9 @@ public final class MovementController {
     }
 
     private int findAllowedPlaceBlock(ClientPlayerEntity player) {
-        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
-            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
+        for (int slot = 0; slot < stacks.size(); slot++) {
+            ItemStack stack = stacks.get(slot);
             if (!(stack.getItem() instanceof BlockItem)) {
                 continue;
             }
@@ -1234,18 +1228,19 @@ public final class MovementController {
         }
         BlockState state = client.world.getBlockState(block);
         int slot = findBestTool(player, state);
-        if (slot < 0 || slot == player.getInventory().getSelectedSlot()) {
+        if (slot < 0 || slot == MinecraftCompat.selectedSlot(player.getInventory())) {
             return true;
         }
         return selectOrMoveToHotbar(client, player, slot);
     }
 
     private int findBestTool(ClientPlayerEntity player, BlockState state) {
-        int selected = player.getInventory().getSelectedSlot();
-        double bestScore = miningScore(player.getInventory().getMainStacks().get(selected), state);
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
+        int selected = MinecraftCompat.selectedSlot(player.getInventory());
+        double bestScore = miningScore(stacks.get(selected), state);
         int bestSlot = selected;
-        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
-            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+        for (int slot = 0; slot < stacks.size(); slot++) {
+            ItemStack stack = stacks.get(slot);
             if (stack.isEmpty()) {
                 continue;
             }
@@ -1270,8 +1265,9 @@ public final class MovementController {
     }
 
     private int findBoat(ClientPlayerEntity player) {
-        for (int slot = 0; slot < player.getInventory().getMainStacks().size(); slot++) {
-            ItemStack stack = player.getInventory().getMainStacks().get(slot);
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
+        for (int slot = 0; slot < stacks.size(); slot++) {
+            ItemStack stack = stacks.get(slot);
             if (stack.getItem() instanceof BoatItem) {
                 return slot;
             }
@@ -1284,10 +1280,10 @@ public final class MovementController {
             return false;
         }
         if (inventorySlot < 9) {
-            player.getInventory().setSelectedSlot(inventorySlot);
+            MinecraftCompat.setSelectedSlot(player.getInventory(), inventorySlot);
             return true;
         }
-        int selected = player.getInventory().getSelectedSlot();
+        int selected = MinecraftCompat.selectedSlot(player.getInventory());
         if (client.interactionManager == null) {
             return false;
         }
@@ -1298,7 +1294,7 @@ public final class MovementController {
                 SlotActionType.SWAP,
                 player
         );
-        player.getInventory().setSelectedSlot(selected);
+        MinecraftCompat.setSelectedSlot(player.getInventory(), selected);
         return false;
     }
 
@@ -1499,9 +1495,7 @@ public final class MovementController {
         if (client.player == null) {
             return;
         }
-        client.player.networkHandler.sendPacket(new PlayerInputC2SPacket(
-                new PlayerInput(forward, back, left, right, jump, sneak, sprint)
-        ));
+        MinecraftCompat.sendPlayerInput(client.player, forward, back, left, right, jump, sneak, sprint);
     }
 
     private void sendBoatPaddles(MinecraftClient client, boolean left, boolean right) {
@@ -1516,9 +1510,8 @@ public final class MovementController {
             return;
         }
         Entity vehicle = client.player.getVehicle();
-        if (vehicle instanceof AbstractBoatEntity boat) {
-            boat.setInputs(false, false, false, false);
-            boat.setPaddlesMoving(false, false);
+        if (vehicle instanceof BoatEntity boat) {
+            MinecraftCompat.setBoatControls(boat, false, false, false);
             sendBoatPaddles(client, false, false);
         }
     }

@@ -1,20 +1,17 @@
 package dev.mappywall.client;
 
 import java.util.List;
-import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
-import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
 
 public final class HudProgressRenderer {
     private HudProgressRenderer() {
     }
 
     public static void register(MappyWallRuntime runtime) {
-        Identifier id = Identifier.of(MappyWallClient.MOD_ID, "progress");
-        HudElementRegistry.attachElementAfter(VanillaHudElements.HOTBAR, id, (graphics, tickCounter) -> {
+        HudRenderCallback.EVENT.register((graphics, tickCounter) -> {
             MinecraftClient client = MinecraftClient.getInstance();
             if (client.player == null) {
                 return;

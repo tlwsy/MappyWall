@@ -17,7 +17,7 @@ import net.minecraft.item.map.MapState;
 public final class InventoryMapScanner {
     public int countEmptyMaps(ClientPlayerEntity player) {
         int count = 0;
-        for (ItemStack stack : player.getInventory().getMainStacks()) {
+        for (ItemStack stack : MinecraftCompat.mainStacks(player.getInventory())) {
             if (stack.isOf(Items.MAP)) {
                 count += stack.getCount();
             }
@@ -26,8 +26,9 @@ public final class InventoryMapScanner {
     }
 
     public int findHotbarEmptyMap(ClientPlayerEntity player) {
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
         for (int slot = 0; slot < 9; slot++) {
-            if (player.getInventory().getMainStacks().get(slot).isOf(Items.MAP)) {
+            if (stacks.get(slot).isOf(Items.MAP)) {
                 return slot;
             }
         }
@@ -35,8 +36,9 @@ public final class InventoryMapScanner {
     }
 
     public int findInventoryEmptyMap(ClientPlayerEntity player) {
-        for (int slot = 9; slot < player.getInventory().getMainStacks().size(); slot++) {
-            if (player.getInventory().getMainStacks().get(slot).isOf(Items.MAP)) {
+        List<ItemStack> stacks = MinecraftCompat.mainStacks(player.getInventory());
+        for (int slot = 9; slot < stacks.size(); slot++) {
+            if (stacks.get(slot).isOf(Items.MAP)) {
                 return slot;
             }
         }
@@ -45,7 +47,7 @@ public final class InventoryMapScanner {
 
     public Set<Integer> scanFilledMapIds(ClientPlayerEntity player) {
         Set<Integer> ids = new HashSet<>();
-        for (ItemStack stack : player.getInventory().getMainStacks()) {
+        for (ItemStack stack : MinecraftCompat.mainStacks(player.getInventory())) {
             if (!stack.isOf(Items.FILLED_MAP)) {
                 continue;
             }
@@ -65,7 +67,7 @@ public final class InventoryMapScanner {
         }
 
         String dimension = client.world.getRegistryKey().getValue().toString();
-        for (ItemStack stack : client.player.getInventory().getMainStacks()) {
+        for (ItemStack stack : MinecraftCompat.mainStacks(client.player.getInventory())) {
             if (!stack.isOf(Items.FILLED_MAP)) {
                 continue;
             }

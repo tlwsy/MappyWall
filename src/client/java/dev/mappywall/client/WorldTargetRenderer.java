@@ -1,20 +1,12 @@
 package dev.mappywall.client;
 
-import com.mojang.blaze3d.pipeline.BlendFunction;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.platform.DepthTestFunction;
-import com.mojang.blaze3d.vertex.VertexFormat;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gl.UniformType;
 import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.RenderSetup;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
@@ -23,28 +15,7 @@ public final class WorldTargetRenderer {
     private static final double BEAM_BOTTOM_OFFSET = -48.0;
     private static final double BEAM_TOP_OFFSET = 192.0;
 
-    private static final RenderPipeline TARGET_LINE_PIPELINE = RenderPipeline.builder()
-            .withLocation(Identifier.of(MappyWallClient.MOD_ID, "pipeline/target_lines_xray"))
-            .withUniform("DynamicTransforms", UniformType.UNIFORM_BUFFER)
-            .withUniform("Projection", UniformType.UNIFORM_BUFFER)
-            .withUniform("Fog", UniformType.UNIFORM_BUFFER)
-            .withUniform("Globals", UniformType.UNIFORM_BUFFER)
-            .withVertexShader("core/rendertype_lines")
-            .withFragmentShader("core/rendertype_lines")
-            .withBlend(BlendFunction.TRANSLUCENT)
-            .withCull(false)
-            .withDepthWrite(false)
-            .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
-            .withVertexFormat(VertexFormats.POSITION_COLOR_NORMAL_LINE_WIDTH, VertexFormat.DrawMode.LINES)
-            .build();
-
-    private static final RenderLayer TARGET_LINES = RenderLayer.of(
-            "mappywall_target_lines",
-            RenderSetup.builder(TARGET_LINE_PIPELINE)
-                    .expectedBufferSize(1536)
-                    .translucent()
-                    .build()
-    );
+    private static final RenderLayer TARGET_LINES = RenderLayer.getLines();
 
     private WorldTargetRenderer() {
     }
@@ -180,11 +151,9 @@ public final class WorldTargetRenderer {
         MatrixStack.Entry entry = matrices.peek();
         vertices.vertex(entry, relativeStartX, relativeStartY, relativeStartZ)
                 .color(red, green, blue, alpha)
-                .lineWidth(2.5F)
                 .normal(entry, nx, ny, nz);
         vertices.vertex(entry, relativeEndX, relativeEndY, relativeEndZ)
                 .color(red, green, blue, alpha)
-                .lineWidth(2.5F)
                 .normal(entry, nx, ny, nz);
     }
 }
