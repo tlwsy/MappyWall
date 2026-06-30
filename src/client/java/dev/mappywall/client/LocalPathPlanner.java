@@ -445,7 +445,7 @@ public final class LocalPathPlanner {
         private static final Cell OUT_OF_RANGE = new Cell(false, false, false, false, "minecraft:bedrock");
 
         static NavigationSnapshot capture(ClientPlayerEntity player) {
-            World world = player.getEntityWorld();
+            World world = MinecraftCompat.world(player);
             BlockPos start = player.getBlockPos();
             int minX = start.getX() - MAX_HORIZONTAL_RANGE;
             int maxX = start.getX() + MAX_HORIZONTAL_RANGE;

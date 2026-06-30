@@ -14,8 +14,10 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.c2s.play.PlayerInputC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import net.minecraft.network.packet.c2s.play.VehicleMoveC2SPacket;
 import net.minecraft.util.Identifier;
 import net.minecraft.world.HeightLimitView;
+import net.minecraft.world.World;
 
 final class MinecraftCompat {
     private static final String CATEGORY_TRANSLATION_KEY = "key.categories.mappywall.controls";
@@ -87,6 +89,17 @@ final class MinecraftCompat {
 
     static int topYInclusive(HeightLimitView world) {
         return world.getBottomY() + world.getHeight() - 1;
+    }
+
+    static World world(ClientPlayerEntity player) {
+        Object world = invoke(player, "getEntityWorld");
+        if (world == null) {
+            world = invoke(player, "getWorld");
+        }
+        if (world instanceof World typedWorld) {
+            return typedWorld;
+        }
+        throw new IllegalStateException("Could not read player world.");
     }
 
     static KeyBinding createKeyBinding(String translationKey, int keyCode) {
@@ -199,6 +212,26 @@ final class MinecraftCompat {
         }
     }
 
+    static void sendVehicleMove(ClientPlayerEntity player, Entity vehicle) {
+        try {
+            Method method = VehicleMoveC2SPacket.class.getMethod("fromVehicle", Entity.class);
+            player.networkHandler.sendPacket((Packet<?>) method.invoke(null, vehicle));
+        } catch (NoSuchMethodException ignored) {
+            sendLegacyVehicleMove(player, vehicle);
+        } catch (IllegalAccessException | InvocationTargetException exception) {
+            throw new IllegalStateException("Could not send vehicle move packet.", exception);
+        }
+    }
+
+    private static void sendLegacyVehicleMove(ClientPlayerEntity player, Entity vehicle) {
+        try {
+            Constructor<VehicleMoveC2SPacket> constructor = VehicleMoveC2SPacket.class.getConstructor(Entity.class);
+            player.networkHandler.sendPacket(constructor.newInstance(vehicle));
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException("Could not send vehicle move packet.", exception);
+        }
+    }
+
     private static void sendLegacyPlayerInput(
             ClientPlayerEntity player,
             boolean forward,
@@ -230,9 +263,17 @@ final class MinecraftCompat {
     }
 
     private static Boolean invokeBoolean(Object target, String methodName) {
+        Object result = invoke(target, methodName);
+        if (result == null) {
+            return null;
+        }
+        return (Boolean) result;
+    }
+
+    private static Object invoke(Object target, String methodName) {
         try {
             Method method = target.getClass().getMethod(methodName);
-            return (Boolean) method.invoke(target);
+            return method.invoke(target);
         } catch (NoSuchMethodException ignored) {
             return null;
         } catch (IllegalAccessException | InvocationTargetException exception) {
