@@ -27,7 +27,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.BoatPaddleStateC2SPacket;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.network.packet.c2s.play.VehicleMoveC2SPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
@@ -546,7 +545,7 @@ public final class MovementController {
             boat.setPosition(boat.getX() + velocity.x, boat.getY(), boat.getZ() + velocity.z);
             sendServerLook(player, yaw, 0.0F);
             if (player.networkHandler != null) {
-                player.networkHandler.sendPacket(VehicleMoveC2SPacket.fromVehicle(boat));
+                MinecraftCompat.sendVehicleMove(player, boat);
             }
         }
         return MovementResult.active(pathSnapshot());
