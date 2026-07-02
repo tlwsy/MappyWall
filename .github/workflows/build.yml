@@ -1,1 +1,55 @@
 
+name: Build Mod Jar
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build mod jar
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Build
+        run: ./gradlew clean build --no-daemon
+
+      - name: Collect mod jar
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find build/libs -maxdepth 1 -type f -name "*.jar" \
+            ! -name "*-sources.jar" \
+            ! -name "*-dev.jar" \
+            ! -name "*-javadoc.jar" \
+            -exec cp {} artifacts/ \;
+
+          echo "Collected jars:"
+          find artifacts -maxdepth 1 -type f -name "*.jar" -print
+
+          test "$(find artifacts -maxdepth 1 -type f -name '*.jar' | wc -l)" -gt 0
+
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: mappywall-mod-jar
+          path: artifacts/*.jar
+          if-no-files-found: error
