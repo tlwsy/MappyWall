@@ -2,12 +2,12 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.ProjectStatus;
 import java.util.List;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
 
 public final class MapWallTasksScreen extends Screen {
     private static final int MAX_VISIBLE_TASKS = 5;
@@ -16,7 +16,7 @@ public final class MapWallTasksScreen extends Screen {
     private List<MappyWallRuntime.ProjectListItem> tasks = List.of();
 
     public MapWallTasksScreen(MappyWallRuntime runtime) {
-        super(Text.translatable("screen.mappywall.tasks.title"));
+        super(Component.translatable("screen.mappywall.tasks.title"));
         this.runtime = runtime;
     }
 
@@ -26,80 +26,82 @@ public final class MapWallTasksScreen extends Screen {
         int left = Math.max(8, this.width / 2 - 176);
         int y = Math.max(24, this.height / 2 - 104);
 
-        addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.new_task"), button ->
-                runtime.openNewProjectScreen(MinecraftClient.getInstance())
-        ).dimensions(left, y, 96, 20).build());
+        addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.new_task"), button ->
+                runtime.openNewProjectScreen(Minecraft.getInstance())
+        ).bounds(left, y, 96, 20).build());
 
-        ButtonWidget pauseButton = ButtonWidget.builder(Text.translatable("screen.mappywall.pause_resume"), button -> {
-            runtime.togglePause(MinecraftClient.getInstance());
+        Button pauseButton = Button.builder(Component.translatable("screen.mappywall.pause_resume"), button -> {
+            runtime.togglePause(Minecraft.getInstance());
             refresh();
-        }).dimensions(left + 104, y, 96, 20).build();
+        }).bounds(left + 104, y, 96, 20).build();
         pauseButton.active = runtime.hasActiveProject();
-        addDrawableChild(pauseButton);
+        addRenderableWidget(pauseButton);
 
-        ButtonWidget stopButton = ButtonWidget.builder(Text.translatable("screen.mappywall.stop_hide"), button -> {
-            runtime.stopActiveProject(MinecraftClient.getInstance());
+        Button stopButton = Button.builder(Component.translatable("screen.mappywall.stop_hide"), button -> {
+            runtime.stopActiveProject(Minecraft.getInstance());
             refresh();
-        }).dimensions(left + 208, y, 144, 20).build();
+        }).bounds(left + 208, y, 144, 20).build();
         stopButton.active = runtime.hasActiveProject();
-        addDrawableChild(stopButton);
+        addRenderableWidget(stopButton);
 
         int taskY = y + 42;
         int visibleTasks = visibleTaskCount(taskY);
         for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
             MappyWallRuntime.ProjectListItem task = tasks.get(i);
             boolean completed = task.status() == ProjectStatus.COMPLETE;
-            Text actionText = completed
-                    ? Text.translatable("screen.mappywall.print_order")
-                    : Text.translatable("screen.mappywall.activate");
-            ButtonWidget actionButton = ButtonWidget.builder(actionText, button -> {
+            Component actionText = completed
+                    ? Component.translatable("screen.mappywall.print_order")
+                    : Component.translatable("screen.mappywall.activate");
+            Button actionButton = Button.builder(actionText, button -> {
                 if (completed) {
-                    runtime.printHangingOrder(MinecraftClient.getInstance(), task.id());
+                    runtime.printHangingOrder(Minecraft.getInstance(), task.id());
                     return;
                 }
-                runtime.activateProject(MinecraftClient.getInstance(), task.id());
+                runtime.activateProject(Minecraft.getInstance(), task.id());
                 refresh();
-            }).dimensions(left + 232, taskY + i * 32, 56, 20).build();
+            }).bounds(left + 232, taskY + i * 32, 56, 20).build();
             actionButton.active = completed || !task.active();
-            addDrawableChild(actionButton);
+            addRenderableWidget(actionButton);
 
-            ButtonWidget deleteButton = ButtonWidget.builder(Text.translatable("screen.mappywall.delete"), button -> {
-                runtime.deleteProject(MinecraftClient.getInstance(), task.id());
+            Button deleteButton = Button.builder(Component.translatable("screen.mappywall.delete"), button -> {
+                runtime.deleteProject(Minecraft.getInstance(), task.id());
                 refresh();
-            }).dimensions(left + 296, taskY + i * 32, 56, 20).build();
+            }).bounds(left + 296, taskY + i * 32, 56, 20).build();
             deleteButton.active = !task.active();
-            addDrawableChild(deleteButton);
+            addRenderableWidget(deleteButton);
         }
 
-        addDrawableChild(ButtonWidget.builder(Text.translatable("screen.mappywall.close"), button -> close())
-                .dimensions(this.width / 2 - 100, closeButtonY(y), 200, 20)
+        addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.close"), button -> onClose())
+                .bounds(this.width / 2 - 100, closeButtonY(y), 200, 20)
                 .build());
     }
 
     @Override
-    public void render(DrawContext graphics, int mouseX, int mouseY, float partialTick) {
+    public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
         int left = Math.max(8, this.width / 2 - 176);
         int y = Math.max(24, this.height / 2 - 104);
-        graphics.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, y - 24, 0xFFFFFFFF);
-        graphics.drawTextWithShadow(this.textRenderer,
-                Text.translatable("screen.mappywall.tasks.count").append(": " + tasks.size()),
+        graphics.centeredText(this.font, this.title, this.width / 2, y - 24, 0xFFFFFFFF);
+        graphics.text(this.font,
+                Component.translatable("screen.mappywall.tasks.count").append(": " + tasks.size()),
                 left,
                 y + 28,
-                0xFFFFFFFF);
+                0xFFFFFFFF,
+                true);
 
         if (tasks.isEmpty()) {
-            graphics.drawTextWithShadow(this.textRenderer,
-                    Text.translatable("screen.mappywall.tasks.empty").formatted(Formatting.GRAY),
+            graphics.text(this.font,
+                    Component.translatable("screen.mappywall.tasks.empty").withStyle(ChatFormatting.GRAY),
                     left,
                     y + 60,
-                    0xFFFFFFFF);
+                    0xFFFFFFFF,
+                    true);
         }
 
         int visibleTasks = visibleTaskCount(y + 42);
         for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
             MappyWallRuntime.ProjectListItem task = tasks.get(i);
             int rowY = y + 42 + i * 32;
-            Text headline = Text.literal(shortId(task.id()) + "  "
+            Component headline = Component.literal(shortId(task.id()) + "  "
                     + task.width() + "x" + task.height()
                     + " S" + task.scale()
                     + "  " + task.completedSteps() + "/" + task.totalSteps()
@@ -107,34 +109,36 @@ public final class MapWallTasksScreen extends Screen {
                     + "  " + localizedAutomationStyle(task)
                     + "  " + task.status().name());
             if (task.active()) {
-                headline = headline.copy().formatted(Formatting.AQUA);
+                headline = headline.copy().withStyle(ChatFormatting.AQUA);
             }
-            graphics.drawTextWithShadow(this.textRenderer, headline, left, rowY, 0xFFFFFFFF);
-            graphics.drawTextWithShadow(this.textRenderer,
-                    Text.translatable("screen.mappywall.current_step").append(": " + task.targetText()).formatted(Formatting.GRAY),
+            graphics.text(this.font, headline, left, rowY, 0xFFFFFFFF, true);
+            graphics.text(this.font,
+                    Component.translatable("screen.mappywall.current_step").append(": " + task.targetText()).withStyle(ChatFormatting.GRAY),
                     left,
                     rowY + 11,
-                    0xFFFFFFFF);
+                    0xFFFFFFFF,
+                    true);
         }
 
         if (tasks.size() > visibleTasks) {
-            graphics.drawTextWithShadow(this.textRenderer,
-                    Text.translatable("screen.mappywall.tasks.more").append(": " + (tasks.size() - visibleTasks)),
+            graphics.text(this.font,
+                    Component.translatable("screen.mappywall.tasks.more").append(": " + (tasks.size() - visibleTasks)),
                     left,
                     y + 42 + visibleTasks * 32,
-                    0xFFFFFFFF);
+                    0xFFFFFFFF,
+                    true);
         }
 
-        super.render(graphics, mouseX, mouseY, partialTick);
+        super.extractRenderState(graphics, mouseX, mouseY, partialTick);
     }
 
     private void refresh() {
-        clearChildren();
+        clearWidgets();
         init();
     }
 
     private void reloadTasks() {
-        tasks = runtime.listProjects(MinecraftClient.getInstance());
+        tasks = runtime.listProjects(Minecraft.getInstance());
     }
 
     private int visibleTaskCount(int taskY) {
@@ -156,7 +160,7 @@ public final class MapWallTasksScreen extends Screen {
             case OPEN_FIRST -> "screen.mappywall.post_open_open_first";
             case FILL_AFTER_OPEN -> "screen.mappywall.post_open_fill_after_open";
         };
-        return Text.translatable(key).getString();
+        return Component.translatable(key).getString();
     }
 
     private String localizedAutomationStyle(MappyWallRuntime.ProjectListItem task) {
@@ -164,6 +168,6 @@ public final class MapWallTasksScreen extends Screen {
             case NORMAL -> "screen.mappywall.automation_style_normal";
             case AGGRESSIVE -> "screen.mappywall.automation_style_aggressive";
         };
-        return Text.translatable(key).getString();
+        return Component.translatable(key).getString();
     }
 }

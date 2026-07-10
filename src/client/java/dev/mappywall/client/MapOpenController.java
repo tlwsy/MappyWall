@@ -4,14 +4,14 @@ import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.ObservedMap;
 import java.util.Optional;
 import java.util.Set;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.Hand;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 
 public final class MapOpenController {
     private static final int HOTBAR_CONTAINER_OFFSET = 36;
@@ -31,7 +31,7 @@ public final class MapOpenController {
         blockedRegionSignature = null;
     }
 
-    public MapOpenAttempt tryOpenMapInRegion(MinecraftClient client, RouteStep target) {
+    public MapOpenAttempt tryOpenMapInRegion(Minecraft client, RouteStep target) {
         if (pendingOpening != null) {
             PendingOpening pending = pendingOpening;
             Optional<Integer> completed = findCompletedOpening(client, target);
@@ -51,7 +51,7 @@ public final class MapOpenController {
                 pendingOpening = null;
                 cooldownTicks = 100;
                 blockedRegionSignature = pending.regionSignature();
-                return MapOpenAttempt.pause(Text.translatable("message.mappywall.open_unverified"));
+                return MapOpenAttempt.pause(Component.translatable("message.mappywall.open_unverified"));
             }
             return MapOpenAttempt.none();
         }
@@ -61,8 +61,8 @@ public final class MapOpenController {
             return MapOpenAttempt.none();
         }
 
-        ClientPlayerEntity player = client.player;
-        if (player == null || client.interactionManager == null) {
+        LocalPlayer player = client.player;
+        if (player == null || client.gameMode == null) {
             return MapOpenAttempt.none();
         }
 
@@ -79,30 +79,30 @@ public final class MapOpenController {
                 cooldownTicks = 8;
                 return MapOpenAttempt.none();
             }
-            player.sendMessage(Text.translatable(
+            player.sendSystemMessage(Component.translatable(
                     "message.mappywall.needs_empty_map",
                     target.wallPos().column() + 1,
                     target.wallPos().row() + 1
-            ).formatted(Formatting.YELLOW), false);
+            ).withStyle(ChatFormatting.YELLOW));
             cooldownTicks = 40;
             return MapOpenAttempt.none();
         }
 
         player.getInventory().setSelectedSlot(hotbarSlot);
-        ItemStack before = player.getMainHandStack();
-        if (!before.isOf(Items.MAP)) {
+        ItemStack before = player.getMainHandItem();
+        if (!before.is(Items.MAP)) {
             cooldownTicks = 8;
             return MapOpenAttempt.none();
         }
 
         Set<Integer> knownMapIds = currentFilledMapIds(client);
-        client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+        client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
         pendingOpening = new PendingOpening(target.region().signature(), knownMapIds, hotbarSlot, OPEN_WAIT_TICKS);
         cooldownTicks = 4;
         return MapOpenAttempt.none();
     }
 
-    private Optional<Integer> findCompletedOpening(MinecraftClient client, RouteStep target) {
+    private Optional<Integer> findCompletedOpening(Minecraft client, RouteStep target) {
         if (!pendingOpening.regionSignature().equals(target.region().signature())) {
             pendingOpening = null;
             return Optional.empty();
@@ -128,33 +128,33 @@ public final class MapOpenController {
         return Optional.empty();
     }
 
-    private Set<Integer> currentFilledMapIds(MinecraftClient client) {
+    private Set<Integer> currentFilledMapIds(Minecraft client) {
         if (client.player == null) {
             return Set.of();
         }
         return scanner.scanFilledMapIds(client.player);
     }
 
-    private void moveInventoryMapToHotbar(MinecraftClient client, int inventorySlot, int hotbarSlot) {
-        if (client.interactionManager == null || client.player == null) {
+    private void moveInventoryMapToHotbar(Minecraft client, int inventorySlot, int hotbarSlot) {
+        if (client.gameMode == null || client.player == null) {
             return;
         }
         int containerSlot = inventorySlot < 9 ? HOTBAR_CONTAINER_OFFSET + inventorySlot : inventorySlot;
-        client.interactionManager.clickSlot(
-                client.player.currentScreenHandler.syncId,
+        client.gameMode.handleContainerInput(
+                client.player.containerMenu.containerId,
                 containerSlot,
                 hotbarSlot,
-                SlotActionType.SWAP,
+                ContainerInput.SWAP,
                 client.player
         );
     }
 
-    private Integer readPendingSlotMapId(MinecraftClient client) {
+    private Integer readPendingSlotMapId(Minecraft client) {
         if (client.player == null || pendingOpening == null) {
             return null;
         }
-        ItemStack stack = client.player.getInventory().getMainStacks().get(pendingOpening.hotbarSlot());
-        if (!stack.isOf(Items.FILLED_MAP)) {
+        ItemStack stack = client.player.getInventory().getNonEquipmentItems().get(pendingOpening.hotbarSlot());
+        if (!stack.is(Items.FILLED_MAP)) {
             return null;
         }
         return InventoryMapIds.readMapId(stack);
@@ -166,7 +166,7 @@ public final class MapOpenController {
         }
     }
 
-    public record MapOpenAttempt(Integer openedMapId, Text pauseMessage) {
+    public record MapOpenAttempt(Integer openedMapId, Component pauseMessage) {
         static MapOpenAttempt none() {
             return new MapOpenAttempt(null, null);
         }
@@ -175,7 +175,7 @@ public final class MapOpenController {
             return new MapOpenAttempt(mapId, null);
         }
 
-        static MapOpenAttempt pause(Text message) {
+        static MapOpenAttempt pause(Component message) {
             return new MapOpenAttempt(null, message);
         }
 

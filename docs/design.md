@@ -2,13 +2,13 @@
 
 MappyWall is a client-only Fabric mod for planning and opening map walls on vanilla-compatible servers.
 
-Current implementation work targets Minecraft `1.21.11` with Yarn mappings while Minecraft `26.1.2` mappings mature.
+Current implementation targets Minecraft `26.1.2` with its official unobfuscated names and Java 25.
 
 ## Current boundaries
 
 - Manual routing is available and remains the safest/default mode.
 - Automatic walking is available as an explicit mode. It uses only client-side vanilla inputs and interactions, including sprinting, jumping, conservative local path planning, allowed block breaking/placing, eating, and optional boat use when water is encountered.
-- Elytra/firework automation is still outside the current implementation.
+- Elytra/firework automation is available as an explicit automatic mode, including a separately visible aggressive style.
 - The core planner has no Minecraft dependencies so route math, binding recovery, and persistence can be tested without launching the game.
 - Client integration must not register blocks, items, entities, server packets, or any behavior that assumes a Fabric server.
 
@@ -29,4 +29,4 @@ Inventory operations are conservative and re-check client state before continuin
 - The controller sprints by default, follows the local path, and replans periodically or when progress stalls.
 - Stuck recovery no longer immediately pauses the task. It turns toward the local target, jumps, attempts to break an allowed obstacle directly ahead, and keeps replanning.
 - The path planner supports walking, one-block jumps, controlled drops, swimming/water traversal, allowed block breaking, and allowed block placement using the default cobblestone/dirt whitelist.
-- Target and path markers render through terrain so the player can see the current target direction even when it is behind blocks.
+- Target and path markers use Fabric 26.1's level render-state API and render after translucent world features.

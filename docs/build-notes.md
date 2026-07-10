@@ -2,9 +2,9 @@
 
 ## Current target
 
-The current development target is Minecraft `1.21.11` with Yarn `1.21.11+build.6`, Fabric Loader `0.19.3`, Fabric API `0.140.2+1.21.11`, and Java `21`.
+The current development target is Minecraft `26.1.2`, Fabric Loader `0.19.3`, Fabric API `0.154.0+26.1.2`, Fabric Loom `1.17.13`, and Java `25`.
 
-Minecraft `26.1.2` remains the long-term target from the original brief, but its mappings were not usable during the initial implementation pass. Development is temporarily focused on `1.21.11` so the client mod can compile and the MVP can keep moving.
+Minecraft 26.1 is unobfuscated, so this branch uses the official game names directly and does not declare a Yarn mappings dependency. Older Minecraft releases remain on their version-specific branches.
 
 ## Default build
 

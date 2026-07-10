@@ -1,61 +1,29 @@
 package dev.mappywall.client;
 
-import com.mojang.blaze3d.pipeline.BlendFunction;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.platform.DepthTestFunction;
-import com.mojang.blaze3d.vertex.VertexFormat;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gl.UniformType;
-import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.RenderSetup;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.render.VertexFormats;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Vec3d;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.Vec3;
 
 public final class WorldTargetRenderer {
     private static final double FAR_MARKER_DISTANCE = 160.0;
     private static final double BEAM_BOTTOM_OFFSET = -48.0;
     private static final double BEAM_TOP_OFFSET = 192.0;
 
-    private static final RenderPipeline TARGET_LINE_PIPELINE = RenderPipeline.builder()
-            .withLocation(Identifier.of(MappyWallClient.MOD_ID, "pipeline/target_lines_xray"))
-            .withUniform("DynamicTransforms", UniformType.UNIFORM_BUFFER)
-            .withUniform("Projection", UniformType.UNIFORM_BUFFER)
-            .withUniform("Fog", UniformType.UNIFORM_BUFFER)
-            .withUniform("Globals", UniformType.UNIFORM_BUFFER)
-            .withVertexShader("core/rendertype_lines")
-            .withFragmentShader("core/rendertype_lines")
-            .withBlend(BlendFunction.TRANSLUCENT)
-            .withCull(false)
-            .withDepthWrite(false)
-            .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
-            .withVertexFormat(VertexFormats.POSITION_COLOR_NORMAL_LINE_WIDTH, VertexFormat.DrawMode.LINES)
-            .build();
-
-    private static final RenderLayer TARGET_LINES = RenderLayer.of(
-            "mappywall_target_lines",
-            RenderSetup.builder(TARGET_LINE_PIPELINE)
-                    .expectedBufferSize(1536)
-                    .translucent()
-                    .build()
-    );
-
     private WorldTargetRenderer() {
     }
 
     public static void register(MappyWallRuntime runtime) {
-        WorldRenderEvents.BEFORE_TRANSLUCENT.register(context -> render(context, runtime));
+        LevelRenderEvents.AFTER_TRANSLUCENT_FEATURES.register(context -> render(context, runtime));
     }
 
-    private static void render(WorldRenderContext context, MappyWallRuntime runtime) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.world == null) {
+    private static void render(LevelRenderContext context, MappyWallRuntime runtime) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.player == null || client.level == null) {
             return;
         }
 
@@ -63,34 +31,28 @@ public final class WorldTargetRenderer {
     }
 
     private static void renderTarget(
-            WorldRenderContext context,
-            MinecraftClient client,
+            LevelRenderContext context,
+            Minecraft client,
             MappyWallRuntime.RenderTarget target
     ) {
-        MatrixStack matrices = context.matrices();
-        VertexConsumerProvider consumers = context.consumers();
-        if (matrices == null || consumers == null) {
-            return;
-        }
-
-        VertexConsumer vertices = consumers.getBuffer(TARGET_LINES);
-        Vec3d camera = context.gameRenderer().getCamera().getCameraPos();
+        PoseStack matrices = context.poseStack();
+        VertexConsumer vertices = context.bufferSource().getBuffer(RenderTypes.linesTranslucent());
+        Vec3 camera = context.gameRenderer().getMainCamera().position();
 
         double playerY = client.player.getY();
         double centerX = target.targetX() + 0.5;
         double centerZ = target.targetZ() + 0.5;
 
         renderWaypointBeam(matrices, vertices, camera, playerY, centerX, centerZ);
-
         if (target.showPath()) {
-            renderPath(matrices, vertices, camera, client, target, centerX, centerZ);
+            renderPath(matrices, vertices, camera, client, target);
         }
     }
 
     private static void renderWaypointBeam(
-            MatrixStack matrices,
+            PoseStack matrices,
             VertexConsumer vertices,
-            Vec3d camera,
+            Vec3 camera,
             double playerY,
             double targetX,
             double targetZ
@@ -111,28 +73,18 @@ public final class WorldTargetRenderer {
         line(matrices, vertices, camera, markerX, bottomY, markerZ, markerX, topY, markerZ, 64, 224, 255, 255);
         line(matrices, vertices, camera, markerX - 3.0, centerY, markerZ, markerX + 3.0, centerY, markerZ, 64, 224, 255, 255);
         line(matrices, vertices, camera, markerX, centerY, markerZ - 3.0, markerX, centerY, markerZ + 3.0, 64, 224, 255, 255);
-        line(matrices, vertices, camera, markerX - 2.0, centerY - 2.0, markerZ, markerX, centerY, markerZ + 2.0, 64, 224, 255, 255);
-        line(matrices, vertices, camera, markerX, centerY, markerZ + 2.0, markerX + 2.0, centerY - 2.0, markerZ, 64, 224, 255, 255);
-        line(matrices, vertices, camera, markerX + 2.0, centerY - 2.0, markerZ, markerX, centerY - 4.0, markerZ - 2.0, 64, 224, 255, 255);
-        line(matrices, vertices, camera, markerX, centerY - 4.0, markerZ - 2.0, markerX - 2.0, centerY - 2.0, markerZ, 64, 224, 255, 255);
     }
 
     private static void renderPath(
-            MatrixStack matrices,
+            PoseStack matrices,
             VertexConsumer vertices,
-            Vec3d camera,
-            MinecraftClient client,
-            MappyWallRuntime.RenderTarget target,
-            double centerX,
-            double centerZ
+            Vec3 camera,
+            Minecraft client,
+            MappyWallRuntime.RenderTarget target
     ) {
         double previousX = client.player.getX();
         double previousY = client.player.getY() + 0.25;
         double previousZ = client.player.getZ();
-        if (target.path().isEmpty()) {
-            return;
-        }
-
         for (BlockPos pos : target.path()) {
             double nextX = pos.getX() + 0.5;
             double nextY = pos.getY() + 0.25;
@@ -145,9 +97,9 @@ public final class WorldTargetRenderer {
     }
 
     private static void line(
-            MatrixStack matrices,
+            PoseStack matrices,
             VertexConsumer vertices,
-            Vec3d camera,
+            Vec3 camera,
             double startX,
             double startY,
             double startZ,
@@ -159,13 +111,6 @@ public final class WorldTargetRenderer {
             int blue,
             int alpha
     ) {
-        float relativeStartX = (float) (startX - camera.x);
-        float relativeStartY = (float) (startY - camera.y);
-        float relativeStartZ = (float) (startZ - camera.z);
-        float relativeEndX = (float) (endX - camera.x);
-        float relativeEndY = (float) (endY - camera.y);
-        float relativeEndZ = (float) (endZ - camera.z);
-
         double normalX = endX - startX;
         double normalY = endY - startY;
         double normalZ = endZ - startZ;
@@ -177,14 +122,14 @@ public final class WorldTargetRenderer {
         float nx = (float) (normalX / length);
         float ny = (float) (normalY / length);
         float nz = (float) (normalZ / length);
-        MatrixStack.Entry entry = matrices.peek();
-        vertices.vertex(entry, relativeStartX, relativeStartY, relativeStartZ)
-                .color(red, green, blue, alpha)
-                .lineWidth(2.5F)
-                .normal(entry, nx, ny, nz);
-        vertices.vertex(entry, relativeEndX, relativeEndY, relativeEndZ)
-                .color(red, green, blue, alpha)
-                .lineWidth(2.5F)
-                .normal(entry, nx, ny, nz);
+        PoseStack.Pose pose = matrices.last();
+        vertices.addVertex(pose, (float) (startX - camera.x), (float) (startY - camera.y), (float) (startZ - camera.z))
+                .setColor(red, green, blue, alpha)
+                .setLineWidth(2.5F)
+                .setNormal(pose, nx, ny, nz);
+        vertices.addVertex(pose, (float) (endX - camera.x), (float) (endY - camera.y), (float) (endZ - camera.z))
+                .setColor(red, green, blue, alpha)
+                .setLineWidth(2.5F)
+                .setNormal(pose, nx, ny, nz);
     }
 }

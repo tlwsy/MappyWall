@@ -10,14 +10,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.tag.FluidTags;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.MathHelper;
-import net.minecraft.world.World;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 
 public final class LocalPathPlanner {
     private static final int MAX_NODES = 3000;
@@ -39,7 +39,7 @@ public final class LocalPathPlanner {
             {-1, -1}
     };
 
-    public PathPlan plan(ClientPlayerEntity player, RouteStep routeStep, AutoNavigationConfig config) {
+    public PathPlan plan(LocalPlayer player, RouteStep routeStep, AutoNavigationConfig config) {
         return plan(NavigationSnapshot.capture(player), routeStep, config);
     }
 
@@ -112,7 +112,7 @@ public final class LocalPathPlanner {
         for (int[] direction : DIRECTIONS) {
             int dx = direction[0];
             int dz = direction[1];
-            if (!withinSearchRange(current.pos.add(dx, 0, dz), start)) {
+            if (!withinSearchRange(current.pos.offset(dx, 0, dz), start)) {
                 continue;
             }
             if (Math.abs(dx) + Math.abs(dz) == 2 && clipsDiagonal(world, current.pos, dx, dz)) {
@@ -120,11 +120,11 @@ public final class LocalPathPlanner {
             }
             boolean diagonal = Math.abs(dx) + Math.abs(dz) == 2;
 
-            addMove(world, result, current, target, current.pos.add(dx, 0, dz), StepAction.WALK, 1.0 + diagonalCost(dx, dz), config);
+            addMove(world, result, current, target, current.pos.offset(dx, 0, dz), StepAction.WALK, 1.0 + diagonalCost(dx, dz), config);
             if (!diagonal) {
-                addMove(world, result, current, target, current.pos.add(dx, 1, dz), StepAction.JUMP, 2.2, config);
+                addMove(world, result, current, target, current.pos.offset(dx, 1, dz), StepAction.JUMP, 2.2, config);
                 for (int drop = 1; drop <= MAX_DROP; drop++) {
-                    BlockPos down = current.pos.add(dx, -drop, dz);
+                    BlockPos down = current.pos.offset(dx, -drop, dz);
                     if (down.getY() < world.getBottomY()) {
                         break;
                     }
@@ -138,8 +138,8 @@ public final class LocalPathPlanner {
                 }
             }
 
-            addBreakMove(world, result, current, target, current.pos.add(dx, 0, dz), config, dx, dz);
-            addPlaceMove(world, result, current, target, current.pos.add(dx, 0, dz), config);
+            addBreakMove(world, result, current, target, current.pos.offset(dx, 0, dz), config, dx, dz);
+            addPlaceMove(world, result, current, target, current.pos.offset(dx, 0, dz), config);
         }
         return result;
     }
@@ -219,10 +219,10 @@ public final class LocalPathPlanner {
             BlockPos pos,
             AutoNavigationConfig config
     ) {
-        if (!config.blockPlacingEnabled() || !withinWorld(world, pos) || !isPassable(world, pos) || !isPassable(world, pos.up())) {
+        if (!config.blockPlacingEnabled() || !withinWorld(world, pos) || !isPassable(world, pos) || !isPassable(world, pos.above())) {
             return;
         }
-        BlockPos support = pos.down();
+        BlockPos support = pos.below();
         if (!isReplaceable(world, support)) {
             return;
         }
@@ -239,7 +239,7 @@ public final class LocalPathPlanner {
         PathStep best = null;
         double bestScore = Double.MAX_VALUE;
         for (int[] direction : DIRECTIONS) {
-            BlockPos pos = start.add(direction[0], 0, direction[1]);
+            BlockPos pos = start.offset(direction[0], 0, direction[1]);
             Optional<BlockPos> obstacle = firstObstacle(world, pos);
             if (obstacle.isEmpty()) {
                 continue;
@@ -263,20 +263,20 @@ public final class LocalPathPlanner {
 
     private boolean standable(NavigationSnapshot world, BlockPos feet) {
         return isPassable(world, feet)
-                && isPassable(world, feet.up())
-                && hasSupport(world, feet.down());
+                && isPassable(world, feet.above())
+                && hasSupport(world, feet.below());
     }
 
     private boolean standableIfBroken(NavigationSnapshot world, BlockPos feet, BlockPos brokenBlock) {
         return isPassableIfBroken(world, feet, brokenBlock)
-                && isPassableIfBroken(world, feet.up(), brokenBlock)
-                && hasSupport(world, feet.down());
+                && isPassableIfBroken(world, feet.above(), brokenBlock)
+                && hasSupport(world, feet.below());
     }
 
     private boolean swimmable(NavigationSnapshot world, BlockPos feet) {
         return !isDangerous(world, feet)
                 && world.cell(feet).water()
-                && isPassable(world, feet.up());
+                && isPassable(world, feet.above());
     }
 
     private boolean isPassable(NavigationSnapshot world, BlockPos pos) {
@@ -294,7 +294,7 @@ public final class LocalPathPlanner {
         if (!withinWorld(world, pos)) {
             return false;
         }
-        if (world.cell(pos.up()).water()) {
+        if (world.cell(pos.above()).water()) {
             return true;
         }
         return !world.cell(pos).passable();
@@ -308,26 +308,26 @@ public final class LocalPathPlanner {
 
     private boolean isDangerous(NavigationSnapshot world, BlockPos pos) {
         return world.cell(pos).lava()
-                || world.cell(pos.up()).lava();
+                || world.cell(pos.above()).lava();
     }
 
     private Optional<BlockPos> firstObstacle(NavigationSnapshot world, BlockPos feet) {
         if (!isPassable(world, feet)) {
             return Optional.of(feet);
         }
-        if (!isPassable(world, feet.up())) {
-            return Optional.of(feet.up());
+        if (!isPassable(world, feet.above())) {
+            return Optional.of(feet.above());
         }
         return Optional.empty();
     }
 
     private boolean headClearForJump(NavigationSnapshot world, BlockPos currentFeet) {
-        return isPassable(world, currentFeet.up(2));
+        return isPassable(world, currentFeet.above(2));
     }
 
     private boolean clipsDiagonal(NavigationSnapshot world, BlockPos current, int dx, int dz) {
-        return !isPassable(world, current.add(dx, 0, 0))
-                || !isPassable(world, current.add(0, 0, dz));
+        return !isPassable(world, current.offset(dx, 0, 0))
+                || !isPassable(world, current.offset(0, 0, dz));
     }
 
     private double terrainCost(NavigationSnapshot world, BlockPos pos) {
@@ -357,13 +357,13 @@ public final class LocalPathPlanner {
             return feet;
         }
         for (int dy = 1; dy <= 2; dy++) {
-            BlockPos up = pos.up(dy);
+            BlockPos up = pos.above(dy);
             if (standable(world, up) || swimmable(world, up)) {
                 return up;
             }
         }
         for (int dy = 1; dy <= MAX_DROP; dy++) {
-            BlockPos down = pos.down(dy);
+            BlockPos down = pos.below(dy);
             if (standable(world, down) || swimmable(world, down)) {
                 return down;
             }
@@ -372,7 +372,7 @@ public final class LocalPathPlanner {
     }
 
     private boolean reached(BlockPos pos, RouteStep routeStep, BlockPos target) {
-        return MathHelper.floor(Math.sqrt(pos.getSquaredDistance(target))) <= REACHED_TARGET_RADIUS;
+        return Mth.floor(Math.sqrt(pos.distSqr(target))) <= REACHED_TARGET_RADIUS;
     }
 
     private BlockPos nearestRegionTarget(BlockPos start, RouteStep routeStep) {
@@ -387,9 +387,9 @@ public final class LocalPathPlanner {
 
     private int interiorCoordinate(int current, int min, int max) {
         if (max - min + 1 <= REGION_ENTRY_INSET_BLOCKS * 2) {
-            return MathHelper.clamp(current, min, max);
+            return Mth.clamp(current, min, max);
         }
-        return MathHelper.clamp(current, min + REGION_ENTRY_INSET_BLOCKS, max - REGION_ENTRY_INSET_BLOCKS);
+        return Mth.clamp(current, min + REGION_ENTRY_INSET_BLOCKS, max - REGION_ENTRY_INSET_BLOCKS);
     }
 
     private double heuristic(BlockPos pos, BlockPos target) {
@@ -444,34 +444,34 @@ public final class LocalPathPlanner {
         private static final Cell DEFAULT_AIR = new Cell(true, true, false, false, "minecraft:air");
         private static final Cell OUT_OF_RANGE = new Cell(false, false, false, false, "minecraft:bedrock");
 
-        static NavigationSnapshot capture(ClientPlayerEntity player) {
-            World world = player.getEntityWorld();
-            BlockPos start = player.getBlockPos();
+        static NavigationSnapshot capture(LocalPlayer player) {
+            Level world = player.level();
+            BlockPos start = player.blockPosition();
             int minX = start.getX() - MAX_HORIZONTAL_RANGE;
             int maxX = start.getX() + MAX_HORIZONTAL_RANGE;
             int minZ = start.getZ() - MAX_HORIZONTAL_RANGE;
             int maxZ = start.getZ() + MAX_HORIZONTAL_RANGE;
-            int minY = Math.max(world.getBottomY(), start.getY() - MAX_VERTICAL_RANGE - MAX_DROP - 2);
-            int maxY = Math.min(world.getTopYInclusive(), start.getY() + MAX_VERTICAL_RANGE + 2);
+            int minY = Math.max(world.getMinY(), start.getY() - MAX_VERTICAL_RANGE - MAX_DROP - 2);
+            int maxY = Math.min(world.getMaxY() - 1, start.getY() + MAX_VERTICAL_RANGE + 2);
             Map<Long, Cell> cells = new HashMap<>();
-            BlockPos.Mutable mutable = new BlockPos.Mutable();
+            BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
 
             for (int x = minX; x <= maxX; x++) {
                 for (int z = minZ; z <= maxZ; z++) {
                     for (int y = minY; y <= maxY; y++) {
                         mutable.set(x, y, z);
                         BlockState state = world.getBlockState(mutable);
-                        boolean water = world.getFluidState(mutable).isIn(FluidTags.WATER);
-                        boolean lava = world.getFluidState(mutable).isIn(FluidTags.LAVA);
+                        boolean water = world.getFluidState(mutable).is(FluidTags.WATER);
+                        boolean lava = world.getFluidState(mutable).is(FluidTags.LAVA);
                         boolean passable = state.getCollisionShape(world, mutable).isEmpty();
-                        boolean replaceable = state.isReplaceable();
+                        boolean replaceable = state.canBeReplaced();
                         if (passable && replaceable && !water && !lava) {
                             continue;
                         }
 
                         String blockId = state.isAir()
                                 ? "minecraft:air"
-                                : Registries.BLOCK.getId(state.getBlock()).toString();
+                                : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
                         cells.put(mutable.asLong(), new Cell(passable, replaceable, water, lava, blockId));
                     }
                 }
@@ -485,8 +485,8 @@ public final class LocalPathPlanner {
                     maxY,
                     minZ,
                     maxZ,
-                    world.getBottomY(),
-                    world.getTopYInclusive(),
+                    world.getMinY(),
+                    world.getMaxY() - 1,
                     Map.copyOf(cells)
             );
         }

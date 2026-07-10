@@ -5,48 +5,48 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.MapIdComponent;
-import net.minecraft.item.FilledMapItem;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.item.map.MapState;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.MapItem;
+import net.minecraft.world.level.saveddata.maps.MapId;
+import net.minecraft.world.level.saveddata.maps.MapItemSavedData;
 
 public final class InventoryMapScanner {
-    public int countEmptyMaps(ClientPlayerEntity player) {
+    public int countEmptyMaps(LocalPlayer player) {
         int count = 0;
-        for (ItemStack stack : player.getInventory().getMainStacks()) {
-            if (stack.isOf(Items.MAP)) {
+        for (ItemStack stack : player.getInventory().getNonEquipmentItems()) {
+            if (stack.is(Items.MAP)) {
                 count += stack.getCount();
             }
         }
         return count;
     }
 
-    public int findHotbarEmptyMap(ClientPlayerEntity player) {
+    public int findHotbarEmptyMap(LocalPlayer player) {
         for (int slot = 0; slot < 9; slot++) {
-            if (player.getInventory().getMainStacks().get(slot).isOf(Items.MAP)) {
+            if (player.getInventory().getNonEquipmentItems().get(slot).is(Items.MAP)) {
                 return slot;
             }
         }
         return -1;
     }
 
-    public int findInventoryEmptyMap(ClientPlayerEntity player) {
-        for (int slot = 9; slot < player.getInventory().getMainStacks().size(); slot++) {
-            if (player.getInventory().getMainStacks().get(slot).isOf(Items.MAP)) {
+    public int findInventoryEmptyMap(LocalPlayer player) {
+        for (int slot = 9; slot < player.getInventory().getNonEquipmentItems().size(); slot++) {
+            if (player.getInventory().getNonEquipmentItems().get(slot).is(Items.MAP)) {
                 return slot;
             }
         }
         return -1;
     }
 
-    public Set<Integer> scanFilledMapIds(ClientPlayerEntity player) {
+    public Set<Integer> scanFilledMapIds(LocalPlayer player) {
         Set<Integer> ids = new HashSet<>();
-        for (ItemStack stack : player.getInventory().getMainStacks()) {
-            if (!stack.isOf(Items.FILLED_MAP)) {
+        for (ItemStack stack : player.getInventory().getNonEquipmentItems()) {
+            if (!stack.is(Items.FILLED_MAP)) {
                 continue;
             }
 
@@ -58,24 +58,24 @@ public final class InventoryMapScanner {
         return ids;
     }
 
-    public List<ObservedMap> scanFilledMaps(MinecraftClient client) {
+    public List<ObservedMap> scanFilledMaps(Minecraft client) {
         List<ObservedMap> observed = new ArrayList<>();
-        if (client.world == null || client.player == null) {
+        if (client.level == null || client.player == null) {
             return observed;
         }
 
-        String dimension = client.world.getRegistryKey().getValue().toString();
-        for (ItemStack stack : client.player.getInventory().getMainStacks()) {
-            if (!stack.isOf(Items.FILLED_MAP)) {
+        String dimension = client.level.dimension().identifier().toString();
+        for (ItemStack stack : client.player.getInventory().getNonEquipmentItems()) {
+            if (!stack.is(Items.FILLED_MAP)) {
                 continue;
             }
 
-            MapIdComponent mapId = stack.get(DataComponentTypes.MAP_ID);
+            MapId mapId = stack.get(DataComponents.MAP_ID);
             if (mapId == null) {
                 continue;
             }
 
-            MapState data = FilledMapItem.getMapState(mapId, client.world);
+            MapItemSavedData data = MapItem.getSavedData(mapId, client.level);
             if (data == null) {
                 continue;
             }
@@ -92,7 +92,7 @@ public final class InventoryMapScanner {
         return observed;
     }
 
-    private double exploredFraction(MapState data) {
+    private double exploredFraction(MapItemSavedData data) {
         if (data.colors.length == 0) {
             return -1.0;
         }
