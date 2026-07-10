@@ -57,11 +57,11 @@ public final class MappyWallRuntime {
     private List<BlockPos> movementPath = List.of();
 
     public void openConfigScreen(Minecraft client) {
-        client.setScreen(new MapWallTasksScreen(this));
+        client.setScreenAndShow(new MapWallTasksScreen(this));
     }
 
     public void openNewProjectScreen(Minecraft client) {
-        client.setScreen(new MapWallConfigScreen(this));
+        client.setScreenAndShow(new MapWallConfigScreen(this));
     }
 
     public void startManualRun(Minecraft client, int scale, int width, int height) {

@@ -2,7 +2,7 @@
 
 MappyWall is a client-only Fabric mod for planning and opening map walls on vanilla-compatible servers.
 
-Current implementation targets Minecraft `26.1.2` with its official unobfuscated names and Java 25.
+Current implementation targets Minecraft `26.2` with its official unobfuscated names and Java 25.
 
 ## Current boundaries
 

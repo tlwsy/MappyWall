@@ -584,7 +584,7 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
-            sendServerLookAt(player, block.getCenter());
+            sendServerLookAt(player, Vec3.atCenterOf(block));
         } else {
             faceBlock(player, block);
         }
@@ -1306,12 +1306,12 @@ public final class MovementController {
     private BlockHitResult placementHit(Minecraft client, BlockPos placePos) {
         BlockPos below = placePos.below();
         if (isSolid(client, below)) {
-            return new BlockHitResult(below.getCenter().add(0.0, 0.5, 0.0), Direction.UP, below, false);
+            return new BlockHitResult(Vec3.atCenterOf(below).add(0.0, 0.5, 0.0), Direction.UP, below, false);
         }
         for (Direction direction : Direction.Plane.HORIZONTAL) {
             BlockPos neighbor = placePos.relative(direction);
             if (isSolid(client, neighbor)) {
-                return new BlockHitResult(neighbor.getCenter(), direction.getOpposite(), neighbor, false);
+                return new BlockHitResult(Vec3.atCenterOf(neighbor), direction.getOpposite(), neighbor, false);
             }
         }
         return null;
