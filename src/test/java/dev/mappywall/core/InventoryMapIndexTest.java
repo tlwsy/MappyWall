@@ -47,7 +47,7 @@ class InventoryMapIndexTest {
     }
 
     @Test
-    void warnsInsteadOfGuessingWhenMultipleMapsMatchUnboundRegion() {
+    void deterministicallyChoosesOneWhenMultipleMapIdsMatchUnboundRegion() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
@@ -62,9 +62,43 @@ class InventoryMapIndexTest {
                 Instant.EPOCH
         );
 
-        assertEquals(0, result.bindings().size());
-        assertTrue(result.hasWarnings());
-        assertTrue(result.warnings().getFirst().contains("多个地图 [8, 44]"));
+        assertEquals(1, result.bindings().size());
+        assertEquals(8, result.bindings().getFirst().mapId());
+        assertFalse(result.hasWarnings());
+    }
+
+    @Test
+    void prefersHighestMatchingScaleWhenNewTaskFindsExistingMapsForItsRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 3, 1, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep target = save.route().getFirst();
+        MapRegion scaleZero = MapRegionMath.regionForBlock(
+                target.region().dimension(),
+                0,
+                target.region().centerX(),
+                target.region().centerZ()
+        );
+        MapRegion scaleTwo = MapRegionMath.regionForBlock(
+                target.region().dimension(),
+                2,
+                target.region().centerX(),
+                target.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(
+                        new ObservedMap(7, scaleZero.dimension(), scaleZero.scale(), scaleZero.centerX(), scaleZero.centerZ()),
+                        new ObservedMap(40, scaleTwo.dimension(), scaleTwo.scale(), scaleTwo.centerX(), scaleTwo.centerZ())
+                ),
+                Instant.EPOCH
+        );
+
+        assertEquals(1, result.bindings().size());
+        assertEquals(40, result.bindings().getFirst().mapId());
+        assertEquals(BindingVerification.MANUAL_REPAIR, result.bindings().getFirst().verifiedBy());
+        assertFalse(result.hasWarnings());
     }
 
     @Test

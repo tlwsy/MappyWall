@@ -83,19 +83,17 @@ public final class InventoryMapIndex {
 
         for (Map.Entry<String, List<ObservedMap>> entry : candidatesByRegion.entrySet()) {
             String signature = entry.getKey();
-            List<ObservedMap> candidates = entry.getValue().stream()
-                    .sorted(Comparator.comparingInt(ObservedMap::mapId))
-                    .toList();
-            if (candidates.size() > 1) {
-                warnings.add("多个地图 " + candidates.stream().map(map -> Integer.toString(map.mapId())).toList()
-                        + " 同时匹配未绑定区域 " + signature);
-                continue;
-            }
-
             RouteStep match = unboundByRegion.remove(signature);
             if (match == null) {
                 continue;
             }
+            List<ObservedMap> candidates = entry.getValue().stream()
+                    // Different map ids can legitimately describe the same route region.
+                    // Prefer the map requiring the fewest remaining zoom operations, then
+                    // use the id only as a stable tie-breaker.
+                    .sorted(Comparator.comparingInt(ObservedMap::scale).reversed()
+                            .thenComparingInt(ObservedMap::mapId))
+                    .toList();
             ObservedMap observed = candidates.getFirst();
             repaired.add(new MapBinding(
                     match.wallPos(),
