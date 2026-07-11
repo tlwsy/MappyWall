@@ -4,9 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class MapWallPlannerTest {
@@ -91,11 +95,72 @@ class MapWallPlannerTest {
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
 
-        MapWallSave afterFirst = planner.bindCurrentStep(save, 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
-        MapWallSave afterSecond = planner.bindCurrentStep(afterFirst, 44, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
+        MapWallSave afterFirst = planner.bindCurrentStep(save, 8, Instant.EPOCH, BindingVerification.MAP_STATE);
+        MapWallSave afterSecond = planner.bindCurrentStep(afterFirst, 44, Instant.EPOCH, BindingVerification.MAP_STATE);
 
         assertEquals(List.of(8, 44), afterSecond.bindings().stream().map(MapBinding::mapId).toList());
         assertEquals(ProjectStatus.COMPLETE, afterSecond.project().status());
+    }
+
+    @Test
+    void openFirstAtLargerScaleWaitsForTargetScaleVerification() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1",
+                "local",
+                "minecraft:overworld",
+                4,
+                1,
+                1,
+                0,
+                0,
+                RunMode.MANUAL
+        );
+        MapWallSave opened = planner.bindCurrentStep(
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
+        );
+
+        assertEquals(RouteStepState.OPENED, opened.route().getFirst().state());
+        assertEquals(ProjectStatus.RUNNING, opened.project().status());
+        assertNull(planner.nextOpenStep(opened));
+
+        MapBinding old = opened.bindings().getFirst();
+        MapWallSave zoomed = planner.reconcileBindings(opened, List.of(new MapBinding(
+                old.wallPos(),
+                old.regionSignature(),
+                44,
+                old.openedAt(),
+                BindingVerification.TARGET_SCALE
+        )));
+
+        assertEquals(RouteStepState.BOUND, zoomed.route().getFirst().state());
+        assertEquals(ProjectStatus.COMPLETE, zoomed.project().status());
+    }
+
+    @Test
+    void targetCaptureAtScaleZeroWaitsForPositiveMapStateVerification() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave captured = planner.bindCurrentStep(
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
+        );
+
+        assertEquals(RouteStepState.OPENED, captured.route().getFirst().state());
+        assertEquals(ProjectStatus.RUNNING, captured.project().status());
+
+        MapBinding binding = captured.bindings().getFirst();
+        MapWallSave verified = planner.reconcileBindings(captured, List.of(new MapBinding(
+                binding.wallPos(),
+                binding.regionSignature(),
+                binding.mapId(),
+                binding.openedAt(),
+                BindingVerification.MAP_STATE
+        )));
+
+        assertEquals(RouteStepState.BOUND, verified.route().getFirst().state());
+        assertEquals(ProjectStatus.COMPLETE, verified.project().status());
     }
 
     @Test
@@ -145,5 +210,120 @@ class MapWallPlannerTest {
         assertEquals(0, save.session().currentStep());
         assertFalse(save.session().paused());
         assertEquals(4, save.route().size());
+    }
+
+    @Test
+    void manualRepairReconcilesBindingRouteAndFillSessionTogether() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1",
+                "local",
+                "minecraft:overworld",
+                1,
+                2,
+                1,
+                0,
+                0,
+                RunMode.AUTO_WALK,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.FILL_AFTER_OPEN
+        );
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        BindingRepairResult repair = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(new ObservedMap(
+                        77,
+                        first.region().dimension(),
+                        first.region().scale(),
+                        first.region().centerX(),
+                        first.region().centerZ()
+                )),
+                Instant.EPOCH
+        );
+
+        MapWallSave reconciled = planner.reconcileBindings(save, repair.bindings());
+
+        assertEquals(RouteStepState.OPENED, reconciled.route().getFirst().state());
+        assertEquals(RouteStepState.PENDING, reconciled.route().get(1).state());
+        assertEquals(1, reconciled.session().currentStep());
+        assertEquals(0, reconciled.session().fillWaypointIndex());
+        assertEquals(first.region().signature(), planner.nextFillStep(reconciled).region().signature());
+    }
+
+    @Test
+    void refusesToBindOneMapIdToTwoRouteRegions() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave first = planner.bindCurrentStep(
+                planner.createSave(project), 5, Instant.EPOCH, BindingVerification.MAP_STATE
+        );
+
+        MapWallSave unchanged = planner.bindCurrentStep(
+                first, 5, Instant.EPOCH.plusSeconds(1), BindingVerification.MAP_STATE
+        );
+
+        assertEquals(first, unchanged);
+        assertEquals(1, unchanged.bindings().size());
+        assertEquals(1, unchanged.session().currentStep());
+    }
+
+    @Test
+    void fillTargetsAreGloballyUniqueEvenWhenCenterIsInSampleGrid() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1",
+                "local",
+                "minecraft:overworld",
+                1,
+                1,
+                1,
+                0,
+                0,
+                RunMode.AUTO_WALK,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.FILL_AFTER_OPEN
+        );
+        MapWallSave cursor = planner.bindCurrentStep(
+                planner.createSave(project), 9, Instant.EPOCH, BindingVerification.MAP_STATE
+        );
+        Set<BlockTarget> targets = new HashSet<>();
+        int count = planner.fillWaypointCount(cursor.route().getFirst().region());
+        for (int index = 0; index < count; index++) {
+            RouteStep fillStep = planner.nextFillStep(cursor);
+            assertNotNull(fillStep);
+            assertTrue(targets.add(planner.fillNavigationStep(cursor, fillStep).targetBlock()));
+            cursor = planner.advanceFillWaypoint(cursor);
+        }
+        assertEquals(count, targets.size());
+    }
+
+    @Test
+    void persistsSelectedDirectionsOnProjectAndUsesThemByDefault() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1", "local", "minecraft:overworld", 0, 2, 2, 0, 0, RunMode.MANUAL,
+                WallAnchorMode.FIRST_REGION, -1, -1
+        );
+
+        MapWallSave save = planner.createSave(project);
+
+        assertEquals(-1, save.project().columnStepX());
+        assertEquals(-1, save.project().rowStepZ());
+        assertEquals(-128, save.route().get(1).region().centerX());
+        assertEquals(-128, save.route().get(2).region().centerZ());
+    }
+
+    @Test
+    void rejectsWallsBeyondSafeRouteAllocationLimit() {
+        MapWallPlanner planner = new MapWallPlanner();
+
+        assertThrows(IllegalArgumentException.class, () -> planner.createProject(
+                "too-large", "local", "minecraft:overworld", 0, 65, 64, 0, 0, RunMode.MANUAL
+        ));
     }
 }

@@ -29,7 +29,7 @@ class InventoryMapIndexTest {
         assertEquals(1, result.bindings().size());
         assertEquals(42, result.bindings().getFirst().mapId());
         assertEquals(second.wallPos(), result.bindings().getFirst().wallPos());
-        assertEquals(BindingVerification.MANUAL_REPAIR, result.bindings().getFirst().verifiedBy());
+        assertEquals(BindingVerification.TARGET_SCALE, result.bindings().getFirst().verifiedBy());
     }
 
     @Test
@@ -95,6 +95,7 @@ class InventoryMapIndexTest {
         assertEquals(1, result.bindings().size());
         assertTrue(result.hasWarnings());
         assertTrue(result.warnings().getFirst().contains("地图 12 已绑定"));
+        assertEquals(BindingVerification.PENDING_VERIFICATION, result.bindings().getFirst().verifiedBy());
     }
 
     @Test
@@ -259,5 +260,137 @@ class InventoryMapIndexTest {
         assertFalse(result.hasWarnings());
         assertEquals(first.region().signature(), result.bindings().getFirst().regionSignature());
         assertEquals(52, result.bindings().getFirst().mapId());
+    }
+
+    @Test
+    void targetCaptureMismatchBecomesConflictAfterFiniteGrace() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        RouteStep second = save.route().get(1);
+        save = save.withBindings(List.of(new MapBinding(
+                second.wallPos(),
+                second.region().signature(),
+                14,
+                Instant.EPOCH,
+                BindingVerification.TARGET_CAPTURE
+        )));
+        ObservedMap conflicting = new ObservedMap(
+                14,
+                first.region().dimension(),
+                first.region().scale(),
+                first.region().centerX(),
+                first.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(conflicting),
+                Instant.EPOCH.plus(InventoryMapIndex.TARGET_CAPTURE_GRACE).plusMillis(1)
+        );
+
+        assertTrue(result.hasWarnings());
+        assertEquals(BindingVerification.PENDING_VERIFICATION, result.bindings().getFirst().verifiedBy());
+    }
+
+    @Test
+    void pendingVerificationRemainsConflictWhenMapIsNoLongerObserved() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave captured = planner.bindCurrentStep(
+                planner.createSave(project), 12, Instant.EPOCH, BindingVerification.PENDING_VERIFICATION
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                captured, List.of(), Instant.EPOCH.plusSeconds(30)
+        );
+
+        assertTrue(result.hasWarnings());
+        assertEquals(BindingVerification.PENDING_VERIFICATION, result.bindings().getFirst().verifiedBy());
+    }
+
+    @Test
+    void duplicateCopiesOfSameMapIdAreOneCandidate() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep step = save.route().getFirst();
+        ObservedMap copyOne = new ObservedMap(
+                21, step.region().dimension(), step.region().scale(), step.region().centerX(), step.region().centerZ(), 0.2
+        );
+        ObservedMap copyTwo = new ObservedMap(
+                21, step.region().dimension(), step.region().scale(), step.region().centerX(), step.region().centerZ(), 0.8
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save, List.of(copyOne, copyTwo), Instant.EPOCH
+        );
+
+        assertFalse(result.hasWarnings());
+        assertEquals(1, result.bindings().size());
+        assertEquals(21, result.bindings().getFirst().mapId());
+    }
+
+    @Test
+    void conflictingStatesForSameMapIdAreRejectedAsAmbiguous() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
+        MapWallSave save = planner.createSave(project);
+        RouteStep first = save.route().getFirst();
+        RouteStep second = save.route().get(1);
+        ObservedMap firstState = new ObservedMap(
+                21, first.region().dimension(), first.region().scale(), first.region().centerX(), first.region().centerZ()
+        );
+        ObservedMap secondState = new ObservedMap(
+                21, second.region().dimension(), second.region().scale(), second.region().centerX(), second.region().centerZ()
+        );
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save, List.of(firstState, secondState), Instant.EPOCH
+        );
+
+        assertTrue(result.hasWarnings());
+        assertTrue(result.bindings().isEmpty());
+    }
+
+    @Test
+    void acceptsIntermediateZoomScaleInsideTargetRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "zoom-chain", "local", "minecraft:overworld", 4, 1, 1, 0, 0, RunMode.AUTO_WALK
+        );
+        MapWallSave save = planner.createSave(project);
+        RouteStep target = save.route().getFirst();
+        MapRegion intermediate = MapRegionMath.regionForBlock(
+                target.region().dimension(),
+                2,
+                target.region().centerX(),
+                target.region().centerZ()
+        );
+        save = save.withBindings(List.of(new MapBinding(
+                target.wallPos(),
+                target.region().signature(),
+                88,
+                Instant.EPOCH,
+                BindingVerification.TARGET_CAPTURE
+        )));
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(new ObservedMap(
+                        88,
+                        intermediate.dimension(),
+                        intermediate.scale(),
+                        intermediate.centerX(),
+                        intermediate.centerZ()
+                )),
+                Instant.EPOCH.plusSeconds(30)
+        );
+
+        assertFalse(result.hasWarnings());
+        assertEquals(BindingVerification.MAP_STATE, result.bindings().getFirst().verifiedBy());
     }
 }

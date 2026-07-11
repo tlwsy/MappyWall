@@ -2,8 +2,11 @@ package dev.mappywall.core;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 public final class MapWallPlanner {
     public MapWallProject createProject(
@@ -138,19 +141,21 @@ public final class MapWallPlanner {
                 postOpenMode,
                 automationStyle,
                 ProjectStatus.RUNNING,
-                Instant.now()
+                Instant.now(),
+                columnStepX,
+                rowStepZ
         );
     }
 
     public List<RouteStep> planRoute(MapWallProject project) {
-        return planRoute(project, 1, 1);
+        return planRoute(project, project.effectiveColumnStepX(), project.effectiveRowStepZ());
     }
 
     public List<RouteStep> planRoute(MapWallProject project, int columnStepX, int rowStepZ) {
         Objects.requireNonNull(project, "project");
         validateDirectionStep(columnStepX, "columnStepX");
         validateDirectionStep(rowStepZ, "rowStepZ");
-        List<RouteStep> steps = new ArrayList<>(project.width() * project.height());
+        List<RouteStep> steps = new ArrayList<>(project.mapCount());
 
         for (int row = 0; row < project.height(); row++) {
             boolean reverse = row % 2 == 1;
@@ -170,10 +175,16 @@ public final class MapWallPlanner {
     }
 
     public MapWallSave createSave(MapWallProject project) {
-        return createSave(project, 1, 1);
+        return createSave(project, project.effectiveColumnStepX(), project.effectiveRowStepZ());
     }
 
     public MapWallSave createSave(MapWallProject project, int columnStepX, int rowStepZ) {
+        if (project.columnStepX() != 0 && project.columnStepX() != columnStepX) {
+            throw new IllegalArgumentException("columnStepX does not match the project direction");
+        }
+        if (project.rowStepZ() != 0 && project.rowStepZ() != rowStepZ) {
+            throw new IllegalArgumentException("rowStepZ does not match the project direction");
+        }
         List<RouteStep> route = planRoute(project, columnStepX, rowStepZ);
         RunSessionState session = new RunSessionState(
                 0,
@@ -195,31 +206,96 @@ public final class MapWallPlanner {
     }
 
     public MapWallSave bindCurrentStep(MapWallSave save, int mapId, Instant openedAt, BindingVerification verifiedBy) {
+        for (MapBinding binding : save.bindings()) {
+            if (binding.mapId() == mapId) {
+                return save;
+            }
+        }
         RouteStep next = nextOpenStep(save);
         if (next == null) {
-            return save.withProject(save.project().withStatus(ProjectStatus.COMPLETE));
+            return save.route().stream().allMatch(step -> step.state() == RouteStepState.BOUND)
+                    ? save.withProject(save.project().withStatus(ProjectStatus.COMPLETE))
+                    : save;
         }
 
         List<MapBinding> bindings = new ArrayList<>(save.bindings());
         bindings.add(new MapBinding(next.wallPos(), next.region().signature(), mapId, openedAt, verifiedBy));
+        return reconcileBindings(save, bindings);
+    }
 
-        List<RouteStep> route = new ArrayList<>(save.route());
-        int nextIndex = route.indexOf(next);
-        RouteStepState nextState = save.project().postOpenMode() == PostOpenMode.FILL_AFTER_OPEN
-                ? RouteStepState.OPENED
-                : RouteStepState.BOUND;
-        route.set(nextIndex, next.withState(nextState));
+    /**
+     * Applies a repaired binding set as one aggregate state transition. This avoids the
+     * legacy state where a manually discovered binding was persisted while its route step
+     * remained PENDING and was therefore skipped by fill-after-open processing.
+     */
+    public MapWallSave reconcileBindings(MapWallSave save, List<MapBinding> repairedBindings) {
+        Objects.requireNonNull(save, "save");
+        Objects.requireNonNull(repairedBindings, "repairedBindings");
 
-        int following = Math.min(nextIndex + 1, route.size());
-        ProjectStatus status = nextState == RouteStepState.BOUND && following >= route.size()
-                ? ProjectStatus.COMPLETE
-                : save.project().status();
-        RunSessionState session = save.session().withCurrentStep(following).withFillWaypointIndex(0);
+        MapWallSave normalized = new MapWallSave(
+                save.schemaVersion(),
+                save.project(),
+                save.route(),
+                repairedBindings,
+                save.session()
+        );
+        Set<String> boundRegions = new HashSet<>();
+        java.util.Map<String, MapBinding> bindingByRegion = new java.util.HashMap<>();
+        for (MapBinding binding : normalized.bindings()) {
+            boundRegions.add(binding.regionSignature());
+            bindingByRegion.put(binding.regionSignature(), binding);
+        }
+
+        String previousFillRegion = firstOpenFillRegion(save.route(), save.bindings());
+        List<RouteStep> route = new ArrayList<>(save.route().size());
+        for (RouteStep step : save.route()) {
+            boolean bound = boundRegions.contains(step.region().signature());
+            RouteStepState state = step.state();
+            if (bound) {
+                if (save.project().postOpenMode() == PostOpenMode.FILL_AFTER_OPEN) {
+                    state = state == RouteStepState.BOUND ? RouteStepState.BOUND : RouteStepState.OPENED;
+                } else {
+                    MapBinding binding = bindingByRegion.get(step.region().signature());
+                    boolean targetScaleReady = step.region().scale() == 0
+                            ? binding.verifiedBy() == BindingVerification.MAP_STATE
+                                    || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
+                                    || binding.verifiedBy() == BindingVerification.TARGET_SCALE
+                            : binding.verifiedBy() == BindingVerification.TARGET_SCALE;
+                    state = targetScaleReady ? RouteStepState.BOUND : RouteStepState.OPENED;
+                }
+            } else if (state == RouteStepState.OPENED || state == RouteStepState.BOUND) {
+                state = RouteStepState.PENDING;
+            }
+            route.add(step.withState(state));
+        }
+
+        int currentStep = route.size();
+        for (int index = 0; index < route.size(); index++) {
+            if (!boundRegions.contains(route.get(index).region().signature())) {
+                currentStep = index;
+                break;
+            }
+        }
+        String nextFillRegion = firstOpenFillRegion(route, normalized.bindings());
+        int fillWaypointIndex = Objects.equals(previousFillRegion, nextFillRegion)
+                ? save.session().fillWaypointIndex()
+                : 0;
+        RunSessionState session = save.session()
+                .withCurrentStep(currentStep)
+                .withFillWaypointIndex(fillWaypointIndex);
+
+        boolean complete = route.stream().allMatch(step -> step.state() == RouteStepState.BOUND);
+        ProjectStatus status = save.project().status();
+        if (complete) {
+            status = ProjectStatus.COMPLETE;
+        } else if (status == ProjectStatus.COMPLETE) {
+            status = ProjectStatus.RUNNING;
+        }
         return new MapWallSave(
-                MapWallSave.CURRENT_SCHEMA_VERSION,
+                save.schemaVersion(),
                 save.project().withStatus(status),
                 route,
-                bindings,
+                normalized.bindings(),
                 session
         );
     }
@@ -304,16 +380,17 @@ public final class MapWallPlanner {
         int south = bounds.maxZ() - marginZ;
 
         List<BlockTarget> targets = new ArrayList<>(samples * samples + 1);
-        addFillTarget(targets, new BlockTarget(region.centerX(), region.centerZ()));
+        Set<BlockTarget> seen = new LinkedHashSet<>();
+        addFillTarget(targets, seen, new BlockTarget(region.centerX(), region.centerZ()));
         for (int row = 0; row < samples; row++) {
             int z = interpolate(north, south, row, samples);
             if (row % 2 == 0) {
                 for (int column = 0; column < samples; column++) {
-                    addFillTarget(targets, new BlockTarget(interpolate(west, east, column, samples), z));
+                    addFillTarget(targets, seen, new BlockTarget(interpolate(west, east, column, samples), z));
                 }
             } else {
                 for (int column = samples - 1; column >= 0; column--) {
-                    addFillTarget(targets, new BlockTarget(interpolate(west, east, column, samples), z));
+                    addFillTarget(targets, seen, new BlockTarget(interpolate(west, east, column, samples), z));
                 }
             }
         }
@@ -337,10 +414,23 @@ public final class MapWallPlanner {
         return Math.round(min + (max - min) * (index / (float) (samples - 1)));
     }
 
-    private void addFillTarget(List<BlockTarget> targets, BlockTarget target) {
-        if (targets.isEmpty() || !targets.getLast().equals(target)) {
+    private void addFillTarget(List<BlockTarget> targets, Set<BlockTarget> seen, BlockTarget target) {
+        if (seen.add(target)) {
             targets.add(target);
         }
+    }
+
+    private String firstOpenFillRegion(List<RouteStep> route, List<MapBinding> bindings) {
+        Set<String> boundRegions = new HashSet<>();
+        for (MapBinding binding : bindings) {
+            boundRegions.add(binding.regionSignature());
+        }
+        for (RouteStep step : route) {
+            if (step.state() == RouteStepState.OPENED && boundRegions.contains(step.region().signature())) {
+                return step.region().signature();
+            }
+        }
+        return null;
     }
 
     private MapRegion anchorFor(
@@ -355,9 +445,22 @@ public final class MapWallPlanner {
             return reference;
         }
 
-        int anchorGridX = reference.gridX() - Math.floorDiv(width, 2) * columnStepX;
-        int anchorGridZ = reference.gridZ() - Math.floorDiv(height, 2) * rowStepZ;
+        int anchorGridX = checkedGridCoordinate(
+                (long) reference.gridX() - (long) Math.floorDiv(width, 2) * columnStepX,
+                "anchor grid X"
+        );
+        int anchorGridZ = checkedGridCoordinate(
+                (long) reference.gridZ() - (long) Math.floorDiv(height, 2) * rowStepZ,
+                "anchor grid Z"
+        );
         return MapRegionMath.regionForGrid(reference.dimension(), reference.scale(), anchorGridX, anchorGridZ);
+    }
+
+    private int checkedGridCoordinate(long value, String name) {
+        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(name + " is outside the supported range");
+        }
+        return (int) value;
     }
 
     private void validateDirectionStep(int step, String name) {

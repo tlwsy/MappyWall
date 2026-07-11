@@ -16,25 +16,18 @@ public record AutoNavigationConfig(
 ) {
     public static AutoNavigationConfig defaults() {
         return new AutoNavigationConfig(
-                true,
-                ListMode.BLACKLIST,
+                false,
+                ListMode.WHITELIST,
                 Set.of(
-                        "minecraft:bedrock",
-                        "minecraft:barrier",
-                        "minecraft:command_block",
-                        "minecraft:chain_command_block",
-                        "minecraft:repeating_command_block",
-                        "minecraft:structure_block",
-                        "minecraft:jigsaw",
-                        "minecraft:spawner",
-                        "minecraft:chest",
-                        "minecraft:trapped_chest",
-                        "minecraft:barrel",
-                        "minecraft:shulker_box",
-                        "minecraft:ender_chest",
-                        "minecraft:end_portal_frame"
+                        "minecraft:dirt",
+                        "minecraft:grass_block",
+                        "minecraft:stone",
+                        "minecraft:cobblestone",
+                        "minecraft:netherrack",
+                        "minecraft:sand",
+                        "minecraft:gravel"
                 ),
-                true,
+                false,
                 ListMode.WHITELIST,
                 Set.of(
                         "minecraft:cobblestone",
@@ -48,10 +41,32 @@ public record AutoNavigationConfig(
                         "minecraft:poisonous_potato",
                         "minecraft:pufferfish",
                         "minecraft:suspicious_stew",
+                        "minecraft:chicken",
+                        "minecraft:chorus_fruit",
                         "minecraft:golden_apple",
                         "minecraft:enchanted_golden_apple"
                 ),
                 16
+        );
+    }
+
+    /**
+     * Aggressive movement keeps bridging available, but still requires the strict placement
+     * whitelist. Destructive pathing remains opt-in even in aggressive mode.
+     */
+    public static AutoNavigationConfig aggressiveDefaults() {
+        AutoNavigationConfig safe = defaults();
+        return new AutoNavigationConfig(
+                false,
+                safe.breakListMode,
+                safe.breakBlocks,
+                true,
+                safe.placeListMode,
+                safe.placeBlocks,
+                safe.eatingEnabled,
+                safe.foodListMode,
+                safe.foods,
+                safe.eatAtFoodLevel
         );
     }
 

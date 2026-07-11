@@ -14,6 +14,7 @@ public final class MapWallTasksScreen extends Screen {
 
     private final MappyWallRuntime runtime;
     private List<MappyWallRuntime.ProjectListItem> tasks = List.of();
+    private int taskOffset;
 
     public MapWallTasksScreen(MappyWallRuntime runtime) {
         super(Component.translatable("screen.mappywall.tasks.title"));
@@ -46,8 +47,24 @@ public final class MapWallTasksScreen extends Screen {
 
         int taskY = y + 42;
         int visibleTasks = visibleTaskCount(taskY);
-        for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
-            MappyWallRuntime.ProjectListItem task = tasks.get(i);
+        taskOffset = clampTaskOffset(taskOffset, visibleTasks);
+        Button previousButton = Button.builder(Component.literal("<"), button -> {
+            taskOffset = Math.max(0, taskOffset - visibleTasks);
+            refresh();
+        }).bounds(left + 264, y + 22, 40, 18).build();
+        previousButton.active = taskOffset > 0;
+        addRenderableWidget(previousButton);
+
+        Button nextButton = Button.builder(Component.literal(">"), button -> {
+            taskOffset = Math.min(maxTaskOffset(visibleTasks), taskOffset + visibleTasks);
+            refresh();
+        }).bounds(left + 312, y + 22, 40, 18).build();
+        nextButton.active = taskOffset + visibleTasks < tasks.size();
+        addRenderableWidget(nextButton);
+
+        int rowsOnPage = Math.min(visibleTasks, tasks.size() - taskOffset);
+        for (int i = 0; i < rowsOnPage; i++) {
+            MappyWallRuntime.ProjectListItem task = tasks.get(taskOffset + i);
             boolean completed = task.status() == ProjectStatus.COMPLETE;
             Component actionText = completed
                     ? Component.translatable("screen.mappywall.print_order")
@@ -98,8 +115,9 @@ public final class MapWallTasksScreen extends Screen {
         }
 
         int visibleTasks = visibleTaskCount(y + 42);
-        for (int i = 0; i < Math.min(visibleTasks, tasks.size()); i++) {
-            MappyWallRuntime.ProjectListItem task = tasks.get(i);
+        int rowsOnPage = Math.min(visibleTasks, tasks.size() - taskOffset);
+        for (int i = 0; i < rowsOnPage; i++) {
+            MappyWallRuntime.ProjectListItem task = tasks.get(taskOffset + i);
             int rowY = y + 42 + i * 32;
             Component headline = Component.literal(shortId(task.id()) + "  "
                     + task.width() + "x" + task.height()
@@ -122,7 +140,8 @@ public final class MapWallTasksScreen extends Screen {
 
         if (tasks.size() > visibleTasks) {
             graphics.text(this.font,
-                    Component.translatable("screen.mappywall.tasks.more").append(": " + (tasks.size() - visibleTasks)),
+                    Component.translatable("screen.mappywall.tasks.more").append(": "
+                            + (taskOffset + 1) + "-" + (taskOffset + rowsOnPage) + "/" + tasks.size()),
                     left,
                     y + 42 + visibleTasks * 32,
                     0xFFFFFFFF,
@@ -145,6 +164,17 @@ public final class MapWallTasksScreen extends Screen {
         int closeY = closeButtonY(Math.max(24, this.height / 2 - 104));
         int availableRows = Math.max(1, (closeY - taskY - 10) / 32);
         return Math.min(MAX_VISIBLE_TASKS, availableRows);
+    }
+
+    private int clampTaskOffset(int requestedOffset, int pageSize) {
+        return Math.max(0, Math.min(requestedOffset, maxTaskOffset(pageSize)));
+    }
+
+    private int maxTaskOffset(int pageSize) {
+        if (tasks.size() <= pageSize) {
+            return 0;
+        }
+        return ((tasks.size() - 1) / pageSize) * pageSize;
     }
 
     private int closeButtonY(int y) {

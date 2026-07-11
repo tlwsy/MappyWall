@@ -7,7 +7,7 @@ Current implementation targets Minecraft `26.2` with its official unobfuscated n
 ## Current boundaries
 
 - Manual routing is available and remains the safest/default mode.
-- Automatic walking is available as an explicit mode. It uses only client-side vanilla inputs and interactions, including sprinting, jumping, conservative local path planning, allowed block breaking/placing, eating, and optional boat use when water is encountered.
+- Automatic walking is available as an explicit mode. It uses vanilla-compatible client inputs, movement packets, and interactions, including sprinting, jumping, conservative local path planning, opt-in block breaking/placing, eating, and optional boat use when water is encountered.
 - Elytra/firework automation is available as an explicit automatic mode, including a separately visible aggressive style.
 - The core planner has no Minecraft dependencies so route math, binding recovery, and persistence can be tested without launching the game.
 - Client integration must not register blocks, items, entities, server packets, or any behavior that assumes a Fabric server.
@@ -16,17 +16,30 @@ Current implementation targets Minecraft `26.2` with its official unobfuscated n
 
 The first planned map is anchored to the map region containing the player when the project is created. Wall columns move east (`+X`) and rows move south (`+Z`). The MVP route uses a snake pattern to reduce travel distance while preserving row-major wall coordinates for final hanging instructions.
 
-Map bindings use region signatures instead of contiguous map ids. Empty maps always open as vanilla scale 0 maps; MappyWall binds the current wall cell at open time and can later repair manual openings from observed map state when there is a unique region match.
+Map bindings use region signatures instead of contiguous map ids. Empty maps always open as vanilla scale 0 maps. A new id may be stored as a provisional target capture on a slow server, but the route cell is not complete until a matching map state is observed. Manual openings can be repaired when there is one unambiguous region match.
 
 ## Server compatibility
 
 Inventory operations are conservative and re-check client state before continuing. If an operation cannot be verified, the run pauses and the HUD tells the player what needs attention. Automatic movement is behind an explicit mode, shows an on-screen warning, and can be paused with `U` or emergency-stopped with `K`.
 
-## Stage 4 automatic walking
+## Automatic walking and aggressive mode
 
 - Route planning is local and incremental: for each target map region, the navigator aims for the nearest reachable point inside the region rather than forcing the player to stand on the map center.
-- Path searches run on a dedicated daemon thread. The client thread only captures a bounded terrain snapshot and later applies completed path results, so expensive A* work does not block rendering or normal game ticks.
-- The controller sprints by default, follows the local path, and replans periodically or when progress stalls.
-- Stuck recovery no longer immediately pauses the task. It turns toward the local target, jumps, attempts to break an allowed obstacle directly ahead, and keeps replanning.
-- The path planner supports walking, one-block jumps, controlled drops, swimming/water traversal, allowed block breaking, and allowed block placement using the default cobblestone/dirt whitelist.
-- Target and path markers use Fabric 26.1's level render-state API and render after translucent world features.
+- Path searches run on a dedicated daemon thread. The client thread captures a bounded, loaded-chunk-only terrain snapshot; a completed path is accepted only if its target generation still matches and the player has not drifted too far from the snapshot start.
+- Every path step is checked again against the live world before execution. Upward traversal is limited to a normal one-block jump, jumping requires ground or water contact, drops are limited to three blocks, and unloaded or hazardous cells are rejected.
+- Normal mode follows camera-facing vanilla input. Aggressive mode keeps a separate server-facing travel direction so the player may free-look or keep an ordinary inventory screen open, while horizontal speed and vertical motion remain bounded.
+- Block placement is a fallback with a high path cost and a strict cobblestone/dirt whitelist. In aggressive mode placement is a non-blocking side action: movement may continue cautiously while the controller waits for the server to confirm the new support block, and the accepted path is retained after confirmation.
+- Placement and breaking use two phases: after the world change is acknowledged, the controller must safely enter and land in that waypoint before the movement path can advance. World and inventory interactions remain on the client thread; only immutable path search work runs in the background.
+- Block breaking is disabled by default. If explicitly enabled, the block is revalidated immediately before interaction; fluids, block entities, unbreakable blocks, dangerous blocks, and blocks outside the configured allow-list are rejected.
+- Missing paths, stale plans, placement acknowledgement failures, collisions, and stalls release movement input and use bounded retries before pausing. They never trigger blind forward movement or unconditional jumping.
+- Input, sprint/sneak, boat paddle, and aggressive server-look state are reset on pause, emergency stop, project/world changes, vehicle changes, and other terminal transitions.
+- Target and path markers use Minecraft 26.2's level render-state API and render after translucent world features.
+
+## Map opening, zooming, and fill verification
+
+- A newly opened map id is associated with the captured target, then positively verified against its dimension, scale-0 origin, and projected target region. A mismatch becomes a persistent conflict and cannot be cleared merely by hiding the map from the inventory scanner.
+- Both open-first and fill-after-open projects require a positively verified target-scale map id before a cell can complete. This also reopens premature high-scale completions written by older saves when they are loaded.
+- Fill-after-open leases the offhand for the exact target-scale task map so temporary main-hand changes for blocks, food, boats, or fireworks cannot interrupt map updates. Completion uses coverage growth/stability observations, conservative minimum coverage thresholds, and bounded repeat passes instead of treating inventory presence as completion.
+- Aggressive automatic zoom operates only in an open cartography table. It validates the map input, paper input, post-processing result, and server acknowledgement at every scale step; unrelated table contents are never quick-moved.
+- Inventory observations include main inventory and offhand, deduplicate map ids, cache metadata within a tick, and reconcile manual changes with route state before automation resumes.
+- Saves are written through a same-directory durable temporary file with atomic replacement when supported. A validated backup is used only to recover a present but corrupt primary file; deleting a project cannot resurrect its backup.

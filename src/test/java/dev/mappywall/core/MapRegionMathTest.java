@@ -1,6 +1,7 @@
 package dev.mappywall.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -34,5 +35,19 @@ class MapRegionMathTest {
         assertEquals(-128, west.centerX());
         assertEquals(0, origin.centerX());
     }
-}
 
+    @Test
+    void blockGridMathDoesNotOverflowAtPositiveIntBoundary() {
+        assertEquals(16_777_216, MapRegionMath.gridCoordinateForBlock(Integer.MAX_VALUE, 0));
+    }
+
+    @Test
+    void rejectsNonFiniteAndOverflowingRegionCoordinates() {
+        assertThrows(IllegalArgumentException.class, () -> MapRegionMath.regionForBlock(
+                "minecraft:overworld", 0, Double.NaN, 0
+        ));
+        assertThrows(IllegalArgumentException.class, () -> MapRegionMath.regionForGrid(
+                "minecraft:overworld", 4, Integer.MAX_VALUE, 0
+        ));
+    }
+}
