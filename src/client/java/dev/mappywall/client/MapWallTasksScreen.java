@@ -77,14 +77,17 @@ public final class MapWallTasksScreen extends Screen {
                 runtime.activateProject(Minecraft.getInstance(), task.id());
                 refresh();
             }).bounds(left + 232, taskY + i * 32, 56, 20).build();
-            actionButton.active = completed || !task.active();
+            actionButton.active = !task.corrupt() && (completed || !task.active());
             addRenderableWidget(actionButton);
 
             Button deleteButton = Button.builder(Component.translatable("screen.mappywall.delete"), button -> {
-                runtime.deleteProject(Minecraft.getInstance(), task.id());
+                runtime.deleteProject(Minecraft.getInstance(), task.deleteId());
                 refresh();
             }).bounds(left + 296, taskY + i * 32, 56, 20).build();
-            deleteButton.active = !task.active();
+            // A cross-task map-id conflict can involve the active task. Deleting a
+            // deliberately selected conflicting task is the recovery action, and
+            // runtime.deleteProject already stops/clears it safely first.
+            deleteButton.active = true;
             addRenderableWidget(deleteButton);
         }
 
@@ -119,13 +122,16 @@ public final class MapWallTasksScreen extends Screen {
         for (int i = 0; i < rowsOnPage; i++) {
             MappyWallRuntime.ProjectListItem task = tasks.get(taskOffset + i);
             int rowY = y + 42 + i * 32;
-            Component headline = Component.literal(shortId(task.id()) + "  "
-                    + task.width() + "x" + task.height()
-                    + " S" + task.scale()
-                    + "  " + task.completedSteps() + "/" + task.totalSteps()
-                    + "  " + localizedPostOpenMode(task)
-                    + "  " + localizedAutomationStyle(task)
-                    + "  " + task.status().name());
+            Component headline = task.corrupt()
+                    ? Component.translatable("screen.mappywall.tasks.corrupt_entry", shortId(task.id()))
+                            .withStyle(ChatFormatting.RED)
+                    : Component.literal(shortId(task.id()) + "  "
+                            + task.width() + "x" + task.height()
+                            + " S" + task.scale()
+                            + "  " + task.completedSteps() + "/" + task.totalSteps()
+                            + "  " + localizedPostOpenMode(task)
+                            + "  " + localizedAutomationStyle(task)
+                            + "  " + task.status().name());
             if (task.active()) {
                 headline = headline.copy().withStyle(ChatFormatting.AQUA);
             }

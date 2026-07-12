@@ -33,7 +33,7 @@ class InventoryMapIndexTest {
     }
 
     @Test
-    void ignoresObservedMapThatDuplicatesBoundRegion() {
+    void retainsDifferentMapIdThatDuplicatesBoundRegionAsAlias() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.bindCurrentStep(planner.createSave(project), 3, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
@@ -42,12 +42,15 @@ class InventoryMapIndexTest {
         ObservedMap duplicate = new ObservedMap(9, "minecraft:overworld", 0, first.region().centerX(), first.region().centerZ());
         BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(save, List.of(duplicate), Instant.EPOCH);
 
-        assertEquals(1, result.bindings().size());
+        assertEquals(2, result.bindings().size());
+        assertEquals(List.of(3, 9), result.bindings().stream().map(MapBinding::mapId).toList());
+        assertTrue(result.bindings().stream()
+                .allMatch(binding -> binding.regionSignature().equals(first.region().signature())));
         assertFalse(result.hasWarnings());
     }
 
     @Test
-    void deterministicallyChoosesOneWhenMultipleMapIdsMatchUnboundRegion() {
+    void retainsAllMapIdsWhenMultipleMapsMatchUnboundRegion() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
@@ -62,13 +65,15 @@ class InventoryMapIndexTest {
                 Instant.EPOCH
         );
 
-        assertEquals(1, result.bindings().size());
-        assertEquals(8, result.bindings().getFirst().mapId());
+        assertEquals(2, result.bindings().size());
+        assertEquals(List.of(8, 44), result.bindings().stream().map(MapBinding::mapId).toList());
+        assertTrue(result.bindings().stream()
+                .allMatch(binding -> binding.regionSignature().equals(first.region().signature())));
         assertFalse(result.hasWarnings());
     }
 
     @Test
-    void prefersHighestMatchingScaleWhenNewTaskFindsExistingMapsForItsRegion() {
+    void retainsEveryMatchingScaleWhenNewTaskFindsExistingMapsForItsRegion() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 3, 1, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
@@ -95,14 +100,15 @@ class InventoryMapIndexTest {
                 Instant.EPOCH
         );
 
-        assertEquals(1, result.bindings().size());
-        assertEquals(40, result.bindings().getFirst().mapId());
-        assertEquals(BindingVerification.MANUAL_REPAIR, result.bindings().getFirst().verifiedBy());
+        assertEquals(2, result.bindings().size());
+        assertEquals(List.of(7, 40), result.bindings().stream().map(MapBinding::mapId).toList());
+        assertTrue(result.bindings().stream()
+                .allMatch(binding -> binding.verifiedBy() == BindingVerification.MANUAL_REPAIR));
         assertFalse(result.hasWarnings());
     }
 
     @Test
-    void warnsWhenPreviouslyBoundMapIdReportsDifferentRegion() {
+    void reassignsPreviouslyBoundMapIdWhenOnePositiveStateReportsDifferentRegion() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
@@ -127,9 +133,10 @@ class InventoryMapIndexTest {
         BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(save, List.of(conflicting), Instant.EPOCH);
 
         assertEquals(1, result.bindings().size());
-        assertTrue(result.hasWarnings());
-        assertTrue(result.warnings().getFirst().contains("地图 12 已绑定"));
-        assertEquals(BindingVerification.PENDING_VERIFICATION, result.bindings().getFirst().verifiedBy());
+        assertFalse(result.hasWarnings());
+        assertTrue(result.trueConflictMapIds().isEmpty());
+        assertEquals(second.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(BindingVerification.MANUAL_REPAIR, result.bindings().getFirst().verifiedBy());
     }
 
     @Test
@@ -297,7 +304,7 @@ class InventoryMapIndexTest {
     }
 
     @Test
-    void targetCaptureMismatchBecomesConflictAfterFiniteGrace() {
+    void targetCaptureMismatchIsReassignedAfterFiniteGrace() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject("p1", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL);
         MapWallSave save = planner.createSave(project);
@@ -324,8 +331,38 @@ class InventoryMapIndexTest {
                 Instant.EPOCH.plus(InventoryMapIndex.TARGET_CAPTURE_GRACE).plusMillis(1)
         );
 
-        assertTrue(result.hasWarnings());
-        assertEquals(BindingVerification.PENDING_VERIFICATION, result.bindings().getFirst().verifiedBy());
+        assertFalse(result.hasWarnings());
+        assertEquals(1, result.bindings().size());
+        assertEquals(first.wallPos(), result.bindings().getFirst().wallPos());
+        assertEquals(first.region().signature(), result.bindings().getFirst().regionSignature());
+        assertEquals(BindingVerification.MANUAL_REPAIR, result.bindings().getFirst().verifiedBy());
+    }
+
+    @Test
+    void targetCaptureOutsideTaskIsReleasedWithoutConflict() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave save = planner.bindCurrentStep(
+                planner.createSave(project), 14, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
+        );
+        MapRegion outside = MapRegionMath.regionForGrid("minecraft:overworld", 0, 20, 20);
+
+        BindingRepairResult result = new InventoryMapIndex().repairManualOpenings(
+                save,
+                List.of(new ObservedMap(
+                        14,
+                        outside.dimension(),
+                        outside.scale(),
+                        outside.centerX(),
+                        outside.centerZ()
+                )),
+                Instant.EPOCH.plus(InventoryMapIndex.TARGET_CAPTURE_GRACE).plusMillis(1)
+        );
+
+        assertFalse(result.hasWarnings());
+        assertTrue(result.bindings().isEmpty());
     }
 
     @Test
@@ -387,6 +424,7 @@ class InventoryMapIndexTest {
         );
 
         assertTrue(result.hasWarnings());
+        assertEquals(java.util.Set.of(21), result.trueConflictMapIds());
         assertTrue(result.bindings().isEmpty());
     }
 

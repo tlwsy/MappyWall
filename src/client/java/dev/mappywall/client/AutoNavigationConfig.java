@@ -14,19 +14,84 @@ public record AutoNavigationConfig(
         Set<String> foods,
         int eatAtFoodLevel
 ) {
+    public AutoNavigationConfig {
+        breakListMode = breakListMode == null ? ListMode.WHITELIST : breakListMode;
+        breakBlocks = breakBlocks == null ? Set.of() : Set.copyOf(breakBlocks);
+        placeListMode = placeListMode == null ? ListMode.WHITELIST : placeListMode;
+        placeBlocks = placeBlocks == null ? Set.of() : Set.copyOf(placeBlocks);
+        foodListMode = foodListMode == null ? ListMode.BLACKLIST : foodListMode;
+        foods = foods == null ? Set.of() : Set.copyOf(foods);
+        eatAtFoodLevel = Math.max(0, Math.min(20, eatAtFoodLevel));
+    }
+
+    public static final Set<String> DEFAULT_NATURAL_BREAK_BLOCKS = Set.of(
+            "minecraft:stone",
+            "minecraft:granite",
+            "minecraft:diorite",
+            "minecraft:andesite",
+            "minecraft:deepslate",
+            "minecraft:cobbled_deepslate",
+            "minecraft:tuff",
+            "minecraft:calcite",
+            "minecraft:dripstone_block",
+            "minecraft:dirt",
+            "minecraft:coarse_dirt",
+            "minecraft:rooted_dirt",
+            "minecraft:grass_block",
+            "minecraft:podzol",
+            "minecraft:mycelium",
+            "minecraft:mud",
+            "minecraft:clay",
+            "minecraft:sandstone",
+            "minecraft:red_sandstone",
+            "minecraft:snow",
+            "minecraft:snow_block",
+            "minecraft:netherrack",
+            "minecraft:basalt",
+            "minecraft:smooth_basalt",
+            "minecraft:blackstone",
+            "minecraft:end_stone",
+            "minecraft:oak_leaves",
+            "minecraft:spruce_leaves",
+            "minecraft:birch_leaves",
+            "minecraft:jungle_leaves",
+            "minecraft:acacia_leaves",
+            "minecraft:dark_oak_leaves",
+            "minecraft:mangrove_leaves",
+            "minecraft:cherry_leaves",
+            "minecraft:azalea_leaves",
+            "minecraft:flowering_azalea_leaves",
+            "minecraft:pale_oak_leaves"
+    );
+
+    private static final Set<String> NEVER_BREAK_BLOCKS = Set.of(
+            "minecraft:bedrock",
+            "minecraft:barrier",
+            "minecraft:end_portal",
+            "minecraft:end_portal_frame",
+            "minecraft:nether_portal",
+            "minecraft:command_block",
+            "minecraft:chain_command_block",
+            "minecraft:repeating_command_block",
+            "minecraft:structure_block",
+            "minecraft:jigsaw",
+            "minecraft:light",
+            "minecraft:cactus",
+            "minecraft:magma_block",
+            "minecraft:campfire",
+            "minecraft:soul_campfire",
+            "minecraft:fire",
+            "minecraft:soul_fire",
+            "minecraft:powder_snow",
+            "minecraft:sweet_berry_bush",
+            "minecraft:wither_rose"
+    );
+
     public static AutoNavigationConfig defaults() {
         return new AutoNavigationConfig(
                 false,
                 ListMode.WHITELIST,
-                Set.of(
-                        "minecraft:dirt",
-                        "minecraft:grass_block",
-                        "minecraft:stone",
-                        "minecraft:cobblestone",
-                        "minecraft:netherrack",
-                        "minecraft:sand",
-                        "minecraft:gravel"
-                ),
+                DEFAULT_NATURAL_BREAK_BLOCKS,
                 false,
                 ListMode.WHITELIST,
                 Set.of(
@@ -51,13 +116,14 @@ public record AutoNavigationConfig(
     }
 
     /**
-     * Aggressive movement keeps bridging available, but still requires the strict placement
-     * whitelist. Destructive pathing remains opt-in even in aggressive mode.
+     * Aggressive movement keeps bridging available and permits a conservative natural-terrain
+     * break whitelist. The planner still exhausts non-modifying routes first and assigns breaking
+     * a very high cost, so this is an escape hatch rather than the preferred route.
      */
     public static AutoNavigationConfig aggressiveDefaults() {
         AutoNavigationConfig safe = defaults();
         return new AutoNavigationConfig(
-                false,
+                true,
                 safe.breakListMode,
                 safe.breakBlocks,
                 true,
@@ -71,7 +137,9 @@ public record AutoNavigationConfig(
     }
 
     public boolean allowsBreak(String blockId) {
-        return blockBreakingEnabled && breakListMode.allows(breakBlocks, blockId);
+        return blockBreakingEnabled
+                && !NEVER_BREAK_BLOCKS.contains(blockId)
+                && breakListMode.allows(breakBlocks, blockId);
     }
 
     public boolean allowsPlace(String itemId) {

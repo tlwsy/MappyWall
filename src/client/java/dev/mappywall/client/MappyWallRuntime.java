@@ -3,6 +3,7 @@ package dev.mappywall.client;
 import dev.mappywall.core.BindingRepairResult;
 import dev.mappywall.core.BindingVerification;
 import dev.mappywall.core.AutomationStyle;
+import dev.mappywall.core.CrossProjectMapIdIndex;
 import dev.mappywall.core.HangingOrderFormatter;
 import dev.mappywall.core.InventoryMapIndex;
 import dev.mappywall.core.MapBounds;
@@ -24,7 +25,9 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -32,6 +35,7 @@ import java.util.UUID;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
@@ -55,14 +59,19 @@ public final class MappyWallRuntime {
     private static final int FILL_UPDATE_TIMEOUT_TICKS = 180;
     private static final int MAX_FILL_PASSES = 3;
     private static final double COVERAGE_EPSILON = 0.5 / (128.0 * 128.0);
+    private static final String CROSS_PROJECT_WARNING_PREFIX = "[cross-project-map-id:";
+    private static final String LOCAL_MAP_CONFLICT_PREFIX = "[local-map-id-conflict] ";
+    private static final String CORRUPT_DELETE_PREFIX = "\u0000corrupt:";
 
     private final MapWallPlanner planner = new MapWallPlanner();
     private final PersistenceBridge persistence = new PersistenceBridge();
+    private final NavigationConfigStore navigationConfigStore = new NavigationConfigStore();
     private final InventoryMapIndex mapIndex = new InventoryMapIndex();
     private final InventoryMapScanner inventoryScanner = new InventoryMapScanner();
     private final MapOpenController mapOpenController = new MapOpenController(inventoryScanner);
-    private final MovementController movementController = new MovementController();
+    private final MovementController movementController = new MovementController(navigationConfigStore.aggressiveConfig());
     private final HangingOrderFormatter hangingOrderFormatter = new HangingOrderFormatter();
+    private final CrossProjectMapIdIndex crossProjectMapIdIndex = new CrossProjectMapIdIndex();
 
     private MapWallSave activeSave;
     private Path activePath;
@@ -78,13 +87,49 @@ public final class MappyWallRuntime {
     private String zoomTimedOutRegion;
     private FillObservation fillObservation;
     private Component interactionHint;
+    private String lastCrossProjectConflictFingerprint;
 
     public void openConfigScreen(Minecraft client) {
+        if (hasUsableWorld(client)) {
+            auditCrossProjectMapIds(client, true);
+        }
         client.setScreenAndShow(new MapWallTasksScreen(this));
     }
 
     public void openNewProjectScreen(Minecraft client) {
         client.setScreenAndShow(new MapWallConfigScreen(this));
+    }
+
+    public void openNavigationSettingsScreen(Minecraft client, Screen parent) {
+        client.setScreenAndShow(new NavigationSettingsScreen(this, parent));
+    }
+
+    AutoNavigationConfig aggressiveNavigationConfig() {
+        return navigationConfigStore.aggressiveConfig();
+    }
+
+    boolean updateAggressiveBreakingConfig(
+            boolean enabled,
+            AutoNavigationConfig.ListMode listMode,
+            Set<String> blockIds
+    ) {
+        try {
+            navigationConfigStore.updateBreaking(enabled, listMode, blockIds);
+            movementController.setAggressiveConfig(navigationConfigStore.aggressiveConfig());
+            return true;
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
+    boolean resetAggressiveBreakingConfig() {
+        try {
+            navigationConfigStore.resetBreakingDefaults();
+            movementController.setAggressiveConfig(navigationConfigStore.aggressiveConfig());
+            return true;
+        } catch (IOException exception) {
+            return false;
+        }
     }
 
     public void startManualRun(Minecraft client, int scale, int width, int height) {
@@ -275,6 +320,7 @@ public final class MappyWallRuntime {
         }
 
         WorldContext context = currentContext(client);
+        auditCrossProjectMapIds(client, true);
         Optional<PersistenceBridge.LoadedProject> loaded = persistence.loadProject(context.serverKey(), context.dimension(), projectId);
         if (loaded.isEmpty()) {
             client.player.sendSystemMessage(Component.translatable("message.mappywall.project_missing"));
@@ -318,8 +364,12 @@ public final class MappyWallRuntime {
             clearActiveProject();
         }
 
-        if (persistence.deleteProject(context.serverKey(), context.dimension(), projectId)) {
+        boolean deleted = projectId.startsWith(CORRUPT_DELETE_PREFIX)
+                ? persistence.deleteCorruptProject(context.serverKey(), context.dimension(), projectId)
+                : persistence.deleteProject(context.serverKey(), context.dimension(), projectId);
+        if (deleted) {
             client.player.sendSystemMessage(Component.translatable("message.mappywall.project_deleted"));
+            auditCrossProjectMapIds(client, true);
         } else {
             client.player.sendSystemMessage(Component.translatable("message.mappywall.project_missing"));
         }
@@ -507,7 +557,10 @@ public final class MappyWallRuntime {
         boolean reachedFillTarget = fillStep != null
                 && movementTarget != null
                 && reachedFillTarget(client, movementTarget);
-        if (automatic && reachedFillTarget) {
+        boolean stagingMapOpen = automatic
+                && openTarget != null
+                && mapOpenController.canOpenAtCurrentPosition(client, openTarget);
+        if (automatic && (reachedFillTarget || stagingMapOpen)) {
             movementController.release(client);
             movementPath = List.of();
         } else if (automatic) {
@@ -529,16 +582,14 @@ public final class MappyWallRuntime {
             return;
         }
 
-        if (automatic
-                && openTarget != null
-                && openTarget.region().bounds().contains(client.player.getX(), client.player.getZ())) {
+        if (automatic && openTarget != null) {
             MapOpenController.MapOpenAttempt openAttempt = mapOpenController.tryOpenMapInRegion(client, openTarget);
             if (openAttempt.openedMapIdOptional().isPresent()) {
                 activeSave = planner.bindCurrentStep(
                         activeSave,
                         openAttempt.openedMapIdOptional().get(),
                         Instant.now(),
-                        BindingVerification.TARGET_CAPTURE
+                        BindingVerification.MAP_STATE
                 );
                 saveNow(client);
             } else if (openAttempt.shouldPause()) {
@@ -594,7 +645,7 @@ public final class MappyWallRuntime {
                                 "hud.mappywall.map_explored",
                                 Math.round(observed.exploredFraction() * 100.0)
                         ).withStyle(ChatFormatting.GRAY)));
-            } else if (target.region().bounds().contains(client.player.getX(), client.player.getZ())) {
+            } else if (mapOpenController.canOpenAtCurrentPosition(client, target)) {
                 lines.add(Component.translatable("hud.mappywall.inside_target_region").withStyle(ChatFormatting.GREEN));
             } else {
                 lines.add(Component.translatable("hud.mappywall.open_anywhere_in_region").withStyle(ChatFormatting.GRAY));
@@ -610,9 +661,10 @@ public final class MappyWallRuntime {
                     ? "hud.mappywall.auto_elytra_active"
                     : "hud.mappywall.auto_walk_active";
             lines.add(Component.translatable(key).withStyle(ChatFormatting.RED));
-            if (activeSave.project().automationStyle() == AutomationStyle.AGGRESSIVE) {
-                lines.add(Component.translatable("hud.mappywall.aggressive_active").withStyle(ChatFormatting.RED));
-            }
+            String styleKey = activeSave.project().automationStyle() == AutomationStyle.AGGRESSIVE
+                    ? "hud.mappywall.automation_style_aggressive"
+                    : "hud.mappywall.automation_style_normal";
+            lines.add(Component.translatable(styleKey).withStyle(ChatFormatting.RED));
             if (movementController.isWaitingForChunk()) {
                 lines.add(Component.translatable("hud.mappywall.waiting_for_chunk").withStyle(ChatFormatting.YELLOW));
             }
@@ -683,7 +735,29 @@ public final class MappyWallRuntime {
                     completed,
                     total,
                     targetText,
-                    active
+                    active,
+                    false,
+                    save.project().id()
+            ));
+        }
+        for (PersistenceBridge.CorruptProject corrupt : persistence.listCorruptProjects(
+                context.serverKey(),
+                context.dimension()
+        )) {
+            items.add(new ProjectListItem(
+                    corrupt.projectId(),
+                    ProjectStatus.CONFLICT,
+                    0,
+                    0,
+                    0,
+                    PostOpenMode.OPEN_FIRST,
+                    AutomationStyle.NORMAL,
+                    0,
+                    0,
+                    Component.translatable("screen.mappywall.tasks.corrupt").getString(),
+                    false,
+                    true,
+                    CORRUPT_DELETE_PREFIX + corrupt.path().getFileName()
             ));
         }
         return items;
@@ -753,9 +827,10 @@ public final class MappyWallRuntime {
                     .filter(observed -> mapsToTargetRegion(observed, fillStep))
                     .toList();
             if (acknowledged.size() == 1) {
+                int sourceMapId = zoomAck.sourceMapId();
                 zoomAck = null;
                 inventoryInteractionCooldown = INVENTORY_ACK_TICKS;
-                return updateRegionBinding(save, fillStep, acknowledged.getFirst());
+                return updateRegionBinding(save, fillStep, acknowledged.getFirst(), sourceMapId);
             }
             return save;
         }
@@ -794,10 +869,26 @@ public final class MappyWallRuntime {
     }
 
     private MapWallSave updateRegionBinding(MapWallSave save, RouteStep fillStep, ObservedMap observed) {
+        return updateRegionBinding(save, fillStep, observed, null);
+    }
+
+    private MapWallSave updateRegionBinding(
+            MapWallSave save,
+            RouteStep fillStep,
+            ObservedMap observed,
+            Integer consumedSourceMapId
+    ) {
         List<MapBinding> bindings = new ArrayList<>(save.bindings());
+        if (consumedSourceMapId != null && consumedSourceMapId != observed.mapId()) {
+            bindings.removeIf(binding -> binding.mapId() == consumedSourceMapId
+                    && binding.regionSignature().equals(fillStep.region().signature()));
+        }
         for (int index = 0; index < bindings.size(); index++) {
             MapBinding binding = bindings.get(index);
-            if (binding.regionSignature().equals(fillStep.region().signature())) {
+            if (binding.mapId() == observed.mapId()) {
+                if (!binding.regionSignature().equals(fillStep.region().signature())) {
+                    return save;
+                }
                 bindings.set(index, new MapBinding(
                         binding.wallPos(),
                         binding.regionSignature(),
@@ -811,7 +902,17 @@ public final class MappyWallRuntime {
                 return planner.reconcileBindings(save, bindings);
             }
         }
-        return save;
+        bindings.add(new MapBinding(
+                fillStep.wallPos(),
+                fillStep.region().signature(),
+                observed.mapId(),
+                Instant.now(),
+                observed.scale() == fillStep.region().scale()
+                                && observed.regionSignature().equals(fillStep.region().signature())
+                        ? BindingVerification.TARGET_SCALE
+                        : BindingVerification.MAP_STATE
+        ));
+        return planner.reconcileBindings(save, bindings);
     }
 
     private boolean mapsToTargetRegion(ObservedMap observed, RouteStep fillStep) {
@@ -832,16 +933,64 @@ public final class MappyWallRuntime {
         if (activeSave == null) {
             return Optional.empty();
         }
-        Optional<MapBinding> binding = bindingForRegion(activeSave, fillStep.region().signature());
-        if (binding.isEmpty()) {
+        Set<Integer> mapIds = activeSave.bindingsForRegion(fillStep.region().signature()).stream()
+                .map(MapBinding::mapId)
+                .collect(java.util.stream.Collectors.toSet());
+        if (mapIds.isEmpty()) {
             return Optional.empty();
         }
+        Integer offhandMapId = client.player == null
+                ? null
+                : InventoryMapIds.readMapId(client.player.getOffhandItem());
+        return inventoryScanner.scanFilledMaps(client).stream()
+                .filter(observed -> mapIds.contains(observed.mapId()))
+                .filter(observed -> mapsToTargetRegion(observed, fillStep))
+                .sorted(java.util.Comparator
+                        .comparingInt(ObservedMap::scale).reversed()
+                        .thenComparing(observed -> !Objects.equals(observed.mapId(), offhandMapId))
+                        .thenComparingInt(ObservedMap::mapId))
+                .findFirst();
+    }
+
+    private Optional<ObservedMap> observedMapForRegionAnywhere(Minecraft client, RouteStep step) {
+        if (activeSave == null) {
+            return Optional.empty();
+        }
+        Set<Integer> mapIds = activeSave.bindingsForRegion(step.region().signature()).stream()
+                .map(MapBinding::mapId)
+                .collect(java.util.stream.Collectors.toSet());
+        if (mapIds.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<Integer, ObservedMap> observedById = new HashMap<>();
         for (ObservedMap observed : inventoryScanner.scanFilledMaps(client)) {
-            if (observed.mapId() == binding.get().mapId()) {
-                return Optional.of(observed);
+            if (mapIds.contains(observed.mapId()) && mapsToTargetRegion(observed, step)) {
+                observedById.putIfAbsent(observed.mapId(), observed);
             }
         }
-        return Optional.empty();
+        if (client.player != null && client.player.containerMenu instanceof CartographyTableMenu handler) {
+            for (int slotIndex = 0; slotIndex < Math.min(3, handler.slots.size()); slotIndex++) {
+                inventoryScanner.observeFilledMap(client, handler.slots.get(slotIndex).getItem())
+                        .filter(observed -> mapIds.contains(observed.mapId()))
+                        .filter(observed -> mapsToTargetRegion(observed, step))
+                        .ifPresent(observed -> observedById.putIfAbsent(observed.mapId(), observed));
+            }
+        }
+        Integer offhandMapId = client.player == null
+                ? null
+                : InventoryMapIds.readMapId(client.player.getOffhandItem());
+        Integer tableInputMapId = client.player != null
+                        && client.player.containerMenu instanceof CartographyTableMenu handler
+                        && !handler.slots.isEmpty()
+                ? InventoryMapIds.readMapId(handler.slots.getFirst().getItem())
+                : null;
+        return observedById.values().stream()
+                .sorted(java.util.Comparator
+                        .comparing((ObservedMap observed) -> !Objects.equals(observed.mapId(), tableInputMapId))
+                        .thenComparing(java.util.Comparator.comparingInt(ObservedMap::scale).reversed())
+                        .thenComparing(observed -> !Objects.equals(observed.mapId(), offhandMapId))
+                        .thenComparingInt(ObservedMap::mapId))
+                .findFirst();
     }
 
     private Optional<ObservedMap> observedMapAnywhere(Minecraft client, int mapId) {
@@ -865,9 +1014,7 @@ public final class MappyWallRuntime {
     }
 
     private Optional<MapBinding> bindingForRegion(MapWallSave save, String regionSignature) {
-        return save.bindings().stream()
-                .filter(binding -> binding.regionSignature().equals(regionSignature))
-                .findFirst();
+        return save.preferredBindingForRegion(regionSignature);
     }
 
     private Component aggressiveAutoZoom(Minecraft client, RouteStep fillStep) {
@@ -884,14 +1031,16 @@ public final class MappyWallRuntime {
         if (zoomAck != null) {
             return Component.translatable("message.mappywall.auto_zoom_waiting_ack");
         }
-        Optional<MapBinding> binding = bindingForRegion(activeSave, fillStep.region().signature());
+        Optional<ObservedMap> currentMap = observedMapForRegionAnywhere(client, fillStep);
+        if (currentMap.isEmpty()) {
+            return Component.translatable("message.mappywall.auto_zoom_no_bound_map");
+        }
+        Optional<MapBinding> binding = activeSave.bindingForMapId(currentMap.get().mapId());
         if (binding.isEmpty()) {
             return Component.translatable("message.mappywall.auto_zoom_no_bound_map");
         }
-        Optional<ObservedMap> currentMap = observedMapAnywhere(client, binding.get().mapId())
-                .filter(observed -> mapsToTargetRegion(observed, fillStep));
-        if (currentMap.isEmpty()) {
-            return Component.translatable("message.mappywall.auto_zoom_no_bound_map");
+        if (currentMap.get().scale() >= fillStep.region().scale()) {
+            return Component.translatable("message.mappywall.auto_zoom_return_map");
         }
         if (!(client.player.containerMenu instanceof CartographyTableMenu handler)
                 || client.gui.screen() == null) {
@@ -952,6 +1101,7 @@ public final class MappyWallRuntime {
         if (quickMoveSlot(client, handler, 2)) {
             zoomAck = new ZoomAck(
                     fillStep.region().signature(),
+                    currentMap.get().mapId(),
                     currentMap.get().scale() + 1,
                     knownMapIds,
                     ZOOM_ACK_TIMEOUT_TICKS
@@ -1050,11 +1200,13 @@ public final class MappyWallRuntime {
         if (client.player == null || client.gameMode == null) {
             return false;
         }
-        Optional<MapBinding> binding = bindingForRegion(activeSave, fillStep.region().signature());
-        if (binding.isEmpty()) {
+        Optional<ObservedMap> observed = observedMapForFillStep(client, fillStep)
+                .filter(map -> map.scale() == fillStep.region().scale())
+                .filter(map -> map.regionSignature().equals(fillStep.region().signature()));
+        if (observed.isEmpty()) {
             return false;
         }
-        int mapId = binding.get().mapId();
+        int mapId = observed.get().mapId();
         if (isFillMapLeased(client.player, mapId)) {
             return true;
         }
@@ -1105,7 +1257,7 @@ public final class MappyWallRuntime {
         Optional<ObservedMap> observedOptional = observedMapForFillStep(client, fillStep)
                 .filter(observed -> observed.scale() == fillStep.region().scale())
                 .filter(observed -> observed.regionSignature().equals(fillStep.region().signature()));
-        Optional<MapBinding> binding = bindingForRegion(activeSave, fillStep.region().signature());
+        Optional<MapBinding> binding = observedOptional.flatMap(observed -> activeSave.bindingForMapId(observed.mapId()));
         if (observedOptional.isEmpty()
                 || binding.isEmpty()
                 || !isFillMapLeased(client.player, binding.get().mapId())) {
@@ -1244,13 +1396,17 @@ public final class MappyWallRuntime {
             // interaction controller observes its acknowledgement. Never carry that
             // pending opening into the next route region.
             mapOpenController.reset();
+            notifyNewAliasChoices(client, beforeRepair, reconciled);
         }
-        if (result.hasWarnings()) {
+        if (result.hasTrueConflicts()) {
+            List<String> localConflictWarnings = result.warnings().stream()
+                    .map(warning -> LOCAL_MAP_CONFLICT_PREFIX + warning)
+                    .toList();
             boolean shouldNotify = !wasConflict
-                    || !result.warnings().equals(beforeRepair.session().warnings());
+                    || !localConflictWarnings.equals(beforeRepair.session().warnings());
             MapWallSave desired = reconciled
                     .withProject(reconciled.project().withStatus(ProjectStatus.CONFLICT))
-                    .withSession(reconciled.session().withPaused(true).withWarnings(result.warnings()));
+                    .withSession(reconciled.session().withPaused(true).withWarnings(localConflictWarnings));
             boolean changed = !desired.equals(beforeRepair);
             activeSave = desired;
             if (changed) {
@@ -1259,25 +1415,227 @@ public final class MappyWallRuntime {
             }
             if (shouldNotify) {
                 client.player.sendSystemMessage(Component.literal(result.warnings().getFirst()).withStyle(ChatFormatting.RED));
+                notifyTasksReferencingMapIds(client, result.trueConflictMapIds());
             }
         } else if (wasConflict) {
-            activeSave = reconciled
-                    .withProject(reconciled.project().withStatus(ProjectStatus.PAUSED))
-                    .withSession(reconciled.session().withPaused(true).withWarnings(List.of()));
-            movementController.hardReset(client);
-            client.player.sendSystemMessage(Component.translatable("message.mappywall.conflict_resolved")
-                    .withStyle(ChatFormatting.GREEN));
-            saveNow(client);
+            boolean hadLocalConflict = beforeRepair.session().warnings().stream()
+                    .anyMatch(this::isLocalMapConflictWarning);
+            List<String> remainingWarnings = beforeRepair.session().warnings().stream()
+                    .filter(warning -> !isLocalMapConflictWarning(warning))
+                    .toList();
+            boolean crossConflictRemains = remainingWarnings.stream().anyMatch(this::isCrossProjectWarning);
+            MapWallSave desired = reconciled
+                    .withProject(reconciled.project().withStatus(
+                            crossConflictRemains ? ProjectStatus.CONFLICT : ProjectStatus.PAUSED
+                    ))
+                    .withSession(reconciled.session().withPaused(true).withWarnings(remainingWarnings));
+            activeSave = desired;
+            if (!desired.equals(beforeRepair)) {
+                movementController.hardReset(client);
+                saveNow(client);
+            }
+            if (hadLocalConflict && !crossConflictRemains) {
+                client.player.sendSystemMessage(Component.translatable("message.mappywall.conflict_resolved")
+                        .withStyle(ChatFormatting.GREEN));
+            }
         } else {
             activeSave = reconciled;
             if (!activeSave.equals(beforeRepair)) {
                 saveNow(client);
             }
         }
+        if (routeOrBindingsChanged || result.hasTrueConflicts()) {
+            auditCrossProjectMapIds(client, true);
+        }
+    }
+
+    private void notifyNewAliasChoices(Minecraft client, MapWallSave before, MapWallSave after) {
+        Map<String, List<MapBinding>> beforeByRegion = before.finalBindings().stream()
+                .collect(java.util.stream.Collectors.groupingBy(MapBinding::regionSignature));
+        Map<String, List<MapBinding>> afterByRegion = after.finalBindings().stream()
+                .collect(java.util.stream.Collectors.groupingBy(MapBinding::regionSignature));
+        for (RouteStep step : after.route()) {
+            List<MapBinding> choices = afterByRegion.getOrDefault(step.region().signature(), List.of());
+            int previousCount = beforeByRegion.getOrDefault(step.region().signature(), List.of()).size();
+            if (choices.size() <= 1 || choices.size() == previousCount) {
+                continue;
+            }
+            String ids = choices.stream()
+                    .map(MapBinding::mapId)
+                    .sorted()
+                    .map(String::valueOf)
+                    .collect(java.util.stream.Collectors.joining("/"));
+            String wallCell = (step.wallPos().column() + 1) + "," + (step.wallPos().row() + 1);
+            client.player.sendSystemMessage(Component.translatable(
+                    "message.mappywall.duplicate_map_choices",
+                    wallCell,
+                    ids
+            ).withStyle(ChatFormatting.YELLOW));
+        }
+    }
+
+    private void notifyTasksReferencingMapIds(Minecraft client, Set<Integer> mapIds) {
+        if (mapIds.isEmpty()) {
+            return;
+        }
+        WorldContext context = currentContext(client);
+        List<PersistenceBridge.LoadedProject> projects = persistence.listServerProjects(context.serverKey());
+        for (int mapId : mapIds.stream().sorted().toList()) {
+            String projectIds = projects.stream()
+                    .filter(project -> project.save().bindingForMapId(mapId).isPresent())
+                    .map(project -> shortProjectId(project.save().project().id()))
+                    .distinct()
+                    .sorted()
+                    .collect(java.util.stream.Collectors.joining(", "));
+            if (!projectIds.isEmpty()) {
+                client.player.sendSystemMessage(Component.translatable(
+                        "message.mappywall.true_map_id_conflict_tasks",
+                        mapId,
+                        projectIds
+                ).withStyle(ChatFormatting.RED));
+            }
+        }
+    }
+
+    private void auditCrossProjectMapIds(Minecraft client, boolean notify) {
+        if (!hasUsableWorld(client)) {
+            return;
+        }
+        WorldContext context = currentContext(client);
+        if (activeSave != null && Objects.equals(activeContext, context)) {
+            // Never replace the in-memory active job with an older disk snapshot
+            // when the latest progress could not be persisted.
+            if (!saveNow(client)) {
+                return;
+            }
+        }
+        List<PersistenceBridge.LoadedProject> loadedProjects = persistence.listServerProjects(context.serverKey());
+        List<CrossProjectMapIdIndex.Conflict> conflicts = crossProjectMapIdIndex.findConflicts(
+                loadedProjects.stream().map(PersistenceBridge.LoadedProject::save).toList()
+        );
+        String fingerprint = conflicts.stream()
+                .map(conflict -> conflict.mapId() + ":" + conflict.involvedProjectIds().stream()
+                        .sorted()
+                        .collect(java.util.stream.Collectors.joining(",")))
+                .collect(java.util.stream.Collectors.joining("|"));
+
+        Map<String, List<String>> warningsByProject = new HashMap<>();
+        for (CrossProjectMapIdIndex.Conflict conflict : conflicts) {
+            String projectIds = conflict.involvedProjectIds().stream()
+                    .map(this::shortProjectId)
+                    .sorted()
+                    .collect(java.util.stream.Collectors.joining(", "));
+            for (String projectId : conflict.involvedProjectIds()) {
+                warningsByProject.computeIfAbsent(projectId, ignored -> new ArrayList<>())
+                        .add("map " + conflict.mapId() + " -> " + projectIds);
+            }
+            if (notify && !fingerprint.equals(lastCrossProjectConflictFingerprint)) {
+                client.player.sendSystemMessage(Component.translatable(
+                        "message.mappywall.cross_task_map_conflict",
+                        conflict.mapId(),
+                        projectIds
+                ).withStyle(ChatFormatting.RED));
+            }
+        }
+
+        for (PersistenceBridge.LoadedProject loaded : loadedProjects) {
+            MapWallSave save = normalizeLoadedSave(loaded.save());
+            List<String> nonCrossWarnings = save.session().warnings().stream()
+                    .filter(warning -> !isCrossProjectWarning(warning))
+                    .toList();
+            List<String> conflictDetails = warningsByProject.getOrDefault(save.project().id(), List.of());
+            MapWallSave desired = save;
+            if (!conflictDetails.isEmpty()) {
+                ProjectStatus previousStatus = previousStatusBeforeCrossConflict(save).orElse(save.project().status());
+                List<String> warnings = new ArrayList<>(nonCrossWarnings);
+                for (String detail : conflictDetails) {
+                    warnings.add(crossProjectWarning(previousStatus, detail));
+                }
+                desired = save
+                        .withProject(save.project().withStatus(ProjectStatus.CONFLICT))
+                        .withSession(save.session().withPaused(true).withWarnings(warnings));
+            } else if (save.session().warnings().stream().anyMatch(this::isCrossProjectWarning)) {
+                List<String> warnings = new ArrayList<>(nonCrossWarnings);
+                ProjectStatus restored = previousStatusBeforeCrossConflict(save).orElse(ProjectStatus.PAUSED);
+                if (warnings.stream().anyMatch(this::isLocalMapConflictWarning)) {
+                    restored = ProjectStatus.CONFLICT;
+                } else if (restored != ProjectStatus.COMPLETE && restored != ProjectStatus.STOPPED) {
+                    restored = ProjectStatus.PAUSED;
+                }
+                desired = save
+                        .withProject(save.project().withStatus(restored))
+                        .withSession(save.session().withPaused(restored != ProjectStatus.COMPLETE).withWarnings(warnings));
+            }
+
+            if (!desired.equals(loaded.save())) {
+                try {
+                    persistence.save(loaded.path(), desired);
+                } catch (IOException exception) {
+                    client.player.sendSystemMessage(Component.literal(
+                            "MappyWall save failed: " + exception.getMessage()
+                    ).withStyle(ChatFormatting.RED));
+                }
+            }
+            if (activeSave != null
+                    && activeSave.project().id().equals(desired.project().id())
+                    && activeSave.project().dimension().equals(desired.project().dimension())) {
+                boolean newlyPaused = !activeSave.session().paused() && desired.session().paused();
+                activeSave = desired;
+                activePath = loaded.path();
+                if (newlyPaused) {
+                    movementController.hardReset(client);
+                    movementPath = List.of();
+                }
+            }
+        }
+
+        if (conflicts.isEmpty()
+                && lastCrossProjectConflictFingerprint != null
+                && !lastCrossProjectConflictFingerprint.isEmpty()
+                && notify) {
+            client.player.sendSystemMessage(Component.translatable("message.mappywall.conflict_resolved")
+                    .withStyle(ChatFormatting.GREEN));
+        }
+        lastCrossProjectConflictFingerprint = fingerprint.isEmpty() ? null : fingerprint;
+    }
+
+    private String crossProjectWarning(ProjectStatus previousStatus, String detail) {
+        return CROSS_PROJECT_WARNING_PREFIX + previousStatus.name() + "] " + detail;
+    }
+
+    private boolean isCrossProjectWarning(String warning) {
+        return warning.startsWith(CROSS_PROJECT_WARNING_PREFIX);
+    }
+
+    private boolean isLocalMapConflictWarning(String warning) {
+        return warning.startsWith(LOCAL_MAP_CONFLICT_PREFIX);
+    }
+
+    private Optional<ProjectStatus> previousStatusBeforeCrossConflict(MapWallSave save) {
+        return save.session().warnings().stream()
+                .filter(this::isCrossProjectWarning)
+                .map(warning -> {
+                    int end = warning.indexOf(']', CROSS_PROJECT_WARNING_PREFIX.length());
+                    if (end < 0) {
+                        return null;
+                    }
+                    try {
+                        return ProjectStatus.valueOf(warning.substring(CROSS_PROJECT_WARNING_PREFIX.length(), end));
+                    } catch (IllegalArgumentException invalidStatus) {
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .findFirst();
+    }
+
+    private String shortProjectId(String projectId) {
+        return projectId.length() <= 8 ? projectId : projectId.substring(0, 8);
     }
 
     private void loadMostRecentProject(Minecraft client) {
         WorldContext context = currentContext(client);
+        auditCrossProjectMapIds(client, true);
         Optional<PersistenceBridge.LoadedProject> loaded = persistence
                 .listProjects(context.serverKey(), context.dimension())
                 .stream()
@@ -1472,19 +1830,37 @@ public final class MappyWallRuntime {
         }
 
         boolean deleteProject(String serverKey, String dimension, String projectId) {
-            Path path = projectPath(serverKey, dimension, projectId);
-            boolean deleted = false;
+            return deleteProjectPath(projectPath(serverKey, dimension, projectId));
+        }
+
+        boolean deleteCorruptProject(String serverKey, String dimension, String deleteToken) {
+            if (!deleteToken.startsWith(CORRUPT_DELETE_PREFIX)) {
+                return false;
+            }
+            String fileName = deleteToken.substring(CORRUPT_DELETE_PREFIX.length());
+            Path dimensionDir = configRoot.resolve(sanitize(serverKey)).resolve(sanitize(dimension)).toAbsolutePath().normalize();
+            Path path = dimensionDir.resolve(fileName).toAbsolutePath().normalize();
+            if (!Objects.equals(path.getParent(), dimensionDir) || !path.getFileName().toString().endsWith(".json")) {
+                return false;
+            }
+            return deleteProjectPath(path);
+        }
+
+        private boolean deleteProjectPath(Path path) {
             try {
-                deleted = java.nio.file.Files.deleteIfExists(path);
+                java.nio.file.Files.deleteIfExists(path);
             } catch (IOException ignored) {
-                // Still try to remove recovery data below.
+                return false;
+            }
+            if (java.nio.file.Files.exists(path)) {
+                return false;
             }
             try {
-                deleted |= java.nio.file.Files.deleteIfExists(service.backupPath(path));
+                java.nio.file.Files.deleteIfExists(service.backupPath(path));
             } catch (IOException ignored) {
-                // The primary deletion result remains authoritative for the UI.
+                return false;
             }
-            return deleted;
+            return !java.nio.file.Files.exists(service.backupPath(path));
         }
 
         List<LoadedProject> listProjects(String serverKey, String dimension) {
@@ -1518,6 +1894,54 @@ public final class MappyWallRuntime {
             }
         }
 
+        List<LoadedProject> listServerProjects(String serverKey) {
+            Path serverDir = configRoot.resolve(sanitize(serverKey));
+            if (!java.nio.file.Files.isDirectory(serverDir)) {
+                return List.of();
+            }
+            try (java.util.stream.Stream<Path> files = java.nio.file.Files.walk(serverDir, 2)) {
+                return files
+                        .filter(java.nio.file.Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".json"))
+                        .map(path -> {
+                            try {
+                                return service.load(path).map(save -> new LoadedProject(path, save)).orElse(null);
+                            } catch (IOException exception) {
+                                return null;
+                            }
+                        })
+                        .filter(Objects::nonNull)
+                        .toList();
+            } catch (IOException exception) {
+                return List.of();
+            }
+        }
+
+        List<CorruptProject> listCorruptProjects(String serverKey, String dimension) {
+            Path dimensionDir = configRoot.resolve(sanitize(serverKey)).resolve(sanitize(dimension));
+            if (!java.nio.file.Files.isDirectory(dimensionDir)) {
+                return List.of();
+            }
+            try (java.util.stream.Stream<Path> files = java.nio.file.Files.list(dimensionDir)) {
+                return files
+                        .filter(path -> path.getFileName().toString().endsWith(".json"))
+                        .filter(path -> {
+                            try {
+                                return service.load(path).isEmpty();
+                            } catch (IOException exception) {
+                                return true;
+                            }
+                        })
+                        .map(path -> {
+                            String name = path.getFileName().toString();
+                            return new CorruptProject(path, name.substring(0, name.length() - ".json".length()));
+                        })
+                        .toList();
+            } catch (IOException exception) {
+                return List.of();
+            }
+        }
+
         private static String sanitize(String value) {
             StringBuilder builder = new StringBuilder(value.length());
             for (int i = 0; i < value.length(); i++) {
@@ -1533,6 +1957,9 @@ public final class MappyWallRuntime {
 
         private record LoadedProject(Path path, MapWallSave save) {
         }
+
+        private record CorruptProject(Path path, String projectId) {
+        }
     }
 
     private record WorldContext(String serverKey, String dimension) {
@@ -1540,6 +1967,7 @@ public final class MappyWallRuntime {
 
     private record ZoomAck(
             String regionSignature,
+            int sourceMapId,
             int expectedScale,
             Set<Integer> knownMapIds,
             int ticksRemaining
@@ -1549,7 +1977,7 @@ public final class MappyWallRuntime {
         }
 
         ZoomAck tick() {
-            return new ZoomAck(regionSignature, expectedScale, knownMapIds, ticksRemaining - 1);
+            return new ZoomAck(regionSignature, sourceMapId, expectedScale, knownMapIds, ticksRemaining - 1);
         }
     }
 
@@ -1616,7 +2044,9 @@ public final class MappyWallRuntime {
             int completedSteps,
             int totalSteps,
             String targetText,
-            boolean active
+            boolean active,
+            boolean corrupt,
+            String deleteId
     ) {
     }
 

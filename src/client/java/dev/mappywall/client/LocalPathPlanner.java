@@ -187,6 +187,7 @@ public final class LocalPathPlanner {
         boolean hasReasonableNonPlaceRoute = current.action != StepAction.PLACE
                 && result.stream().anyMatch(next ->
                         next.action != StepAction.PLACE
+                                && next.action != StepAction.BREAK
                                 && next.heuristic <= current.heuristic + 0.75
                                 && (current.parent == null || !next.pos.equals(current.parent.pos)));
         if (!hasReasonableNonPlaceRoute) {
@@ -262,7 +263,7 @@ public final class LocalPathPlanner {
         Cell obstacleCell = world.cell(block);
         String blockId = obstacleCell.blockId();
         if (!obstacleCell.loaded() || obstacleCell.water() || obstacleCell.lava()
-                || obstacleCell.passable() || "minecraft:air".equals(blockId)
+                || obstacleCell.passable() || !obstacleCell.breakable() || "minecraft:air".equals(blockId)
                 || !config.allowsBreak(blockId)) {
             return;
         }
@@ -332,7 +333,7 @@ public final class LocalPathPlanner {
         double bestScore = Double.MAX_VALUE;
         for (int[] direction : DIRECTIONS) {
             BlockPos pos = start.offset(direction[0], 0, direction[1]);
-            Optional<BlockPos> obstacle = firstObstacle(world, pos);
+            Optional<BlockPos> obstacle = immediateBreakObstacle(world, pos, config);
             if (obstacle.isEmpty()) {
                 continue;
             }
@@ -340,8 +341,17 @@ public final class LocalPathPlanner {
             Cell obstacleCell = world.cell(block);
             String blockId = obstacleCell.blockId();
             if (!obstacleCell.loaded() || obstacleCell.water() || obstacleCell.lava()
-                    || obstacleCell.passable() || "minecraft:air".equals(blockId)
+                    || obstacleCell.passable() || !obstacleCell.breakable() || "minecraft:air".equals(blockId)
                     || !config.allowsBreak(blockId)) {
+                continue;
+            }
+            boolean stagedHeadBreak = block.equals(pos.above())
+                    && !isPassable(world, pos)
+                    && isAllowedBreakCell(world.cell(pos), config)
+                    && hasSupport(world, pos.below());
+            if (!standableIfBroken(world, pos, block)
+                    && !swimmable(world, pos)
+                    && !stagedHeadBreak) {
                 continue;
             }
             if (heuristic(pos, target) >= heuristic(start, target)) {
@@ -354,6 +364,33 @@ public final class LocalPathPlanner {
             }
         }
         return Optional.ofNullable(best);
+    }
+
+    private Optional<BlockPos> immediateBreakObstacle(
+            NavigationSnapshot world,
+            BlockPos feet,
+            AutoNavigationConfig config
+    ) {
+        Cell feetCell = world.cell(feet);
+        Cell headCell = world.cell(feet.above());
+        if (!feetCell.passable()
+                && !headCell.passable()
+                && isAllowedBreakCell(feetCell, config)
+                && isAllowedBreakCell(headCell, config)) {
+            // Open headroom first. Once acknowledged, live validation deliberately
+            // refuses entry and replans; the next plan can then break the foot block.
+            return Optional.of(feet.above());
+        }
+        return firstObstacle(world, feet);
+    }
+
+    private boolean isAllowedBreakCell(Cell cell, AutoNavigationConfig config) {
+        return cell.loaded()
+                && cell.breakable()
+                && !cell.passable()
+                && !cell.water()
+                && !cell.lava()
+                && config.allowsBreak(cell.blockId());
     }
 
     private boolean standable(NavigationSnapshot world, BlockPos feet) {
@@ -395,7 +432,9 @@ public final class LocalPathPlanner {
         if (world.cell(pos.above()).water()) {
             return true;
         }
-        return !world.cell(pos).passable() && !isUnsafeSupport(world.cell(pos).blockId());
+        return !world.cell(pos).passable()
+                && !isUnsafeSupport(world.cell(pos).blockId())
+                && !isHazardCell(world.cell(pos));
     }
 
     private boolean isUnsafeSupport(String blockId) {
@@ -446,8 +485,13 @@ public final class LocalPathPlanner {
     }
 
     private boolean clipsDiagonal(NavigationSnapshot world, BlockPos current, int dx, int dz) {
-        return !isPassable(world, current.offset(dx, 0, 0))
-                || !isPassable(world, current.offset(0, 0, dz));
+        return !safeDiagonalSide(world, current.offset(dx, 0, 0))
+                || !safeDiagonalSide(world, current.offset(0, 0, dz));
+    }
+
+    private boolean safeDiagonalSide(NavigationSnapshot world, BlockPos feet) {
+        return (isPassable(world, feet) && isPassable(world, feet.above()))
+                && (standable(world, feet) || swimmable(world, feet));
     }
 
     private double terrainCost(NavigationSnapshot world, BlockPos pos) {
@@ -563,9 +607,9 @@ public final class LocalPathPlanner {
             Map<Long, Cell> cells,
             Set<Long> loadedColumns
     ) {
-        private static final Cell DEFAULT_AIR = new Cell(true, true, false, false, "minecraft:air", true);
-        private static final Cell OUT_OF_RANGE = new Cell(false, false, false, false, "minecraft:bedrock", false);
-        private static final Cell UNLOADED = new Cell(false, false, false, false, "minecraft:void_air", false);
+        private static final Cell DEFAULT_AIR = new Cell(true, true, false, false, "minecraft:air", true, false);
+        private static final Cell OUT_OF_RANGE = new Cell(false, false, false, false, "minecraft:bedrock", false, false);
+        private static final Cell UNLOADED = new Cell(false, false, false, false, "minecraft:void_air", false, false);
 
         static NavigationSnapshot capture(LocalPlayer player) {
             Level world = player.level();
@@ -594,13 +638,26 @@ public final class LocalPathPlanner {
                         boolean lava = world.getFluidState(mutable).is(FluidTags.LAVA);
                         boolean passable = state.getCollisionShape(world, mutable).isEmpty();
                         boolean replaceable = state.canBeReplaced();
+                        boolean breakable = !passable
+                                && !water
+                                && !lava
+                                && !state.hasBlockEntity()
+                                && state.getDestroySpeed(world, mutable) >= 0.0F;
                         String blockId = state.isAir()
                                 ? "minecraft:air"
                                 : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
                         if (state.isAir() && !water && !lava) {
                             continue;
                         }
-                        cells.put(mutable.asLong(), new Cell(passable, replaceable, water, lava, blockId, true));
+                        cells.put(mutable.asLong(), new Cell(
+                                passable,
+                                replaceable,
+                                water,
+                                lava,
+                                blockId,
+                                true,
+                                breakable
+                        ));
                     }
                 }
             }
@@ -658,7 +715,8 @@ public final class LocalPathPlanner {
             boolean water,
             boolean lava,
             String blockId,
-            boolean loaded
+            boolean loaded,
+            boolean breakable
     ) {
     }
 

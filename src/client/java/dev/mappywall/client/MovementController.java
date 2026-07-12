@@ -49,7 +49,11 @@ public final class MovementController {
     private static final double WALK_WAYPOINT_DISTANCE_BLOCKS = 0.42;
     private static final double JUMP_WAYPOINT_DISTANCE_BLOCKS = 0.52;
     private static final double DROP_WAYPOINT_DISTANCE_BLOCKS = 0.58;
-    private static final double SWIM_WAYPOINT_DISTANCE_BLOCKS = 0.80;
+    // Keep this below half a block. Advancing a fluid waypoint while the player
+    // is still in the previous block makes the following grid step appear two
+    // blocks away and causes an unnecessary stop/replan cycle for both swimmers
+    // and boats.
+    private static final double SWIM_WAYPOINT_DISTANCE_BLOCKS = 0.42;
     private static final double BOAT_PLACE_REACH_BLOCKS = 4.75;
     private static final int REGION_ENTRY_INSET_BLOCKS = 8;
     private static final float MOVE_ALIGNMENT_DEGREES = 75.0F;
@@ -74,6 +78,7 @@ public final class MovementController {
     private static final double PLAYER_MOVE_EPSILON = 0.015;
     private static final int STUCK_TICKS_LIMIT = 90;
     private static final int COLLISION_REPLAN_TICKS = 8;
+    private static final int MAX_MOVEMENT_RECOVERY_FAILURES = 12;
     private static final int LOCAL_STALL_TICKS = 40;
     private static final int LOOP_STALL_TICKS = 100;
     private static final double LOCAL_STALL_AREA_BLOCKS = 1.0;
@@ -113,7 +118,7 @@ public final class MovementController {
     });
 
     private final AutoNavigationConfig normalConfig = AutoNavigationConfig.defaults();
-    private final AutoNavigationConfig aggressiveConfig = AutoNavigationConfig.aggressiveDefaults();
+    private volatile AutoNavigationConfig aggressiveConfig;
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
     private final ArrayDeque<MovementSample> movementSamples = new ArrayDeque<>();
 
@@ -151,12 +156,26 @@ public final class MovementController {
     private String activeStepSignature;
     private int activeStepTicks;
     private int actionFailures;
+    private int movementRecoveryFailures;
     private BlockPos pendingPlacementBlock;
     private int pendingPlacementTicks;
     private boolean actionAcknowledged;
     private boolean dropCommitted;
     private boolean eatingSession;
     private int movementSampleTick;
+
+    public MovementController() {
+        this(AutoNavigationConfig.aggressiveDefaults());
+    }
+
+    MovementController(AutoNavigationConfig aggressiveConfig) {
+        this.aggressiveConfig = java.util.Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+    }
+
+    public void setAggressiveConfig(AutoNavigationConfig aggressiveConfig) {
+        this.aggressiveConfig = java.util.Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+        forceLocalReplan();
+    }
 
     public MovementResult tick(Minecraft client, MapWallSave save, RouteStep target) {
         if (client.level == null || client.player == null || target == null) {
@@ -189,6 +208,12 @@ public final class MovementController {
         }
 
         tickCooldowns();
+
+        if (movementRecoveryFailures >= MAX_MOVEMENT_RECOVERY_FAILURES) {
+            release(client);
+            resetProgress();
+            return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_stuck"));
+        }
 
         if (tryEat(client, player)) {
             return MovementResult.active(pathSnapshot());
@@ -234,10 +259,10 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
         if (isMovementAction(waypoint.action()) && !isMovementStepSafe(client, player, waypoint)) {
-            actionFailures++;
+            movementRecoveryFailures++;
             forceLocalReplan();
             stopMovement(client);
-            if (actionFailures >= MAX_ACTION_FAILURES) {
+            if (movementRecoveryFailures >= MAX_MOVEMENT_RECOVERY_FAILURES) {
                 release(client);
                 resetProgress();
                 return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_stuck"));
@@ -365,8 +390,8 @@ public final class MovementController {
             return false;
         }
         if (edgeX != 0 && edgeZ != 0
-                && (!isLiveBodyClear(client, currentFeet.offset(edgeX, 0, 0))
-                        || !isLiveBodyClear(client, currentFeet.offset(0, 0, edgeZ)))) {
+                && (!isLiveDiagonalSideSafe(client, currentFeet.offset(edgeX, 0, 0))
+                        || !isLiveDiagonalSideSafe(client, currentFeet.offset(0, 0, edgeZ)))) {
             return false;
         }
         if (!client.level.getFluidState(feet).isEmpty()
@@ -393,7 +418,12 @@ public final class MovementController {
         return switch (step.action()) {
             case JUMP -> verticalDelta >= 0
                     && verticalDelta <= 1
-                    && isLiveBodyClear(client, currentFeet.above());
+                    // Before take-off the current column needs two clear blocks
+                    // through the upward transition. Once the entity's feet are
+                    // already at target Y, the target body clearance checked
+                    // above is sufficient; requiring another block would reject
+                    // valid two-block-high passages in mid-jump.
+                    && (verticalDelta == 0 || isLiveBodyClear(client, currentFeet.above()));
             case DROP -> verticalDelta >= -3
                     && verticalDelta <= 0
                     && isLiveDropShaftClear(client, currentFeet, feet);
@@ -411,6 +441,12 @@ public final class MovementController {
                 && client.level.getBlockState(feet.above()).getCollisionShape(client.level, feet.above()).isEmpty()
                 && !client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.LAVA)
                 && !client.level.getFluidState(feet.above()).is(net.minecraft.tags.FluidTags.LAVA);
+    }
+
+    private boolean isLiveDiagonalSideSafe(Minecraft client, BlockPos feet) {
+        return isLiveBodyClear(client, feet)
+                && (client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER)
+                        || isSafeSolidSupport(client, feet.below()));
     }
 
     private boolean isLiveDropShaftClear(Minecraft client, BlockPos currentFeet, BlockPos targetFeet) {
@@ -487,10 +523,16 @@ public final class MovementController {
 
     private MovementResult executeStep(Minecraft client, LocalPlayer player, LocalPathPlanner.PathStep waypoint) {
         if (!trackStep(waypoint)) {
-            actionFailures++;
+            boolean movementAction = isMovementAction(waypoint.action());
+            if (movementAction) {
+                movementRecoveryFailures++;
+            } else {
+                actionFailures++;
+            }
             forceLocalReplan();
             stopMovement(client);
-            if (actionFailures >= MAX_ACTION_FAILURES) {
+            if ((movementAction && movementRecoveryFailures >= MAX_MOVEMENT_RECOVERY_FAILURES)
+                    || (!movementAction && actionFailures >= MAX_ACTION_FAILURES)) {
                 release(client);
                 resetProgress();
                 return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_stuck"));
@@ -866,19 +908,41 @@ public final class MovementController {
 
         double dirX = dx / distance;
         double dirZ = dz / distance;
-        if (client.level != null
-                && !client.level.noCollision(
-                        boat,
-                        boat.getBoundingBox().move(dirX * BOAT_DRIVE_SPEED, 0.0, dirZ * BOAT_DRIVE_SPEED)
-                                .deflate(0.01)
-                )) {
+        Vec3 currentVelocity = boat.getDeltaMovement();
+        double requestedX = dirX * BOAT_DRIVE_SPEED;
+        double requestedZ = dirZ * BOAT_DRIVE_SPEED;
+        if (style == AutomationStyle.AGGRESSIVE) {
+            // Blend toward the next heading instead of replacing the velocity at
+            // every one-block path node. This preserves momentum through small
+            // grid-direction changes and avoids visible speed pulses.
+            requestedX = Mth.lerp(0.55, currentVelocity.x, requestedX);
+            requestedZ = Mth.lerp(0.55, currentVelocity.z, requestedZ);
+            double requestedSpeed = Math.sqrt(requestedX * requestedX + requestedZ * requestedZ);
+            if (requestedSpeed > BOAT_DRIVE_SPEED) {
+                double scale = BOAT_DRIVE_SPEED / requestedSpeed;
+                requestedX *= scale;
+                requestedZ *= scale;
+            }
+        }
+        Vec3 safeVelocity = collisionAdjustedHorizontalVelocity(
+                client,
+                boat,
+                requestedX,
+                currentVelocity.y,
+                requestedZ
+        );
+        if (Math.abs(safeVelocity.x) + Math.abs(safeVelocity.z) <= 0.0001) {
             boat.setInput(false, false, false, false);
             boat.setPaddleState(false, false);
             sendBoatPaddles(client, false, false, true);
-            boat.setDeltaMovement(0.0, boat.getDeltaMovement().y, 0.0);
+            boat.setDeltaMovement(0.0, currentVelocity.y, 0.0);
+            movementRecoveryFailures++;
+            forceLocalReplan();
             return MovementResult.active(pathSnapshot());
         }
-        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float targetYaw = (float) (Math.toDegrees(Math.atan2(safeVelocity.z, safeVelocity.x)) - 90.0);
+        float yawDelta = Mth.wrapDegrees(targetYaw - boat.getYRot());
+        float yaw = boat.getYRot() + Mth.clamp(yawDelta, -18.0F, 18.0F);
         boat.setYRot(yaw);
         boat.setXRot(0.0F);
         boat.setInput(false, false, true, false);
@@ -890,8 +954,7 @@ public final class MovementController {
         sendPlayerInput(client, true, false, false, false, false, false, true);
 
         if (style == AutomationStyle.AGGRESSIVE) {
-            Vec3 velocity = new Vec3(dirX * BOAT_DRIVE_SPEED, boat.getDeltaMovement().y, dirZ * BOAT_DRIVE_SPEED);
-            boat.setDeltaMovement(velocity);
+            boat.setDeltaMovement(safeVelocity);
             sendServerLook(player, yaw, 0.0F);
             if (player.connection != null) {
                 player.connection.send(ServerboundMoveVehiclePacket.fromEntity(boat));
@@ -1611,7 +1674,7 @@ public final class MovementController {
                     && (player.onGround() || player.isInWater());
             case SWIM -> horizontalDistance <= SWIM_WAYPOINT_DISTANCE_BLOCKS
                     && Math.abs(yError) <= 1.25
-                    && player.isInWater();
+                    && (player.isInWater() || player.getVehicle() instanceof AbstractBoat);
             case BREAK, PLACE -> false;
         };
     }
@@ -1621,6 +1684,7 @@ public final class MovementController {
         activeStepSignature = null;
         activeStepTicks = 0;
         actionFailures = 0;
+        movementRecoveryFailures = 0;
         pendingPlacementBlock = null;
         pendingPlacementTicks = 0;
         actionAcknowledged = false;
@@ -1635,10 +1699,13 @@ public final class MovementController {
         double movedX = playerPos.x - lastPlayerPos.x;
         double movedZ = playerPos.z - lastPlayerPos.z;
         double playerMoved = Math.sqrt(movedX * movedX + movedZ * movedZ);
-        if (distance < lastDistance - STUCK_EPSILON
-                || waypointDistance < lastWaypointDistance - STUCK_EPSILON
-                || playerMoved > PLAYER_MOVE_EPSILON) {
+        boolean madeProgress = distance < lastDistance - STUCK_EPSILON
+                || waypointDistance < lastWaypointDistance - STUCK_EPSILON;
+        if (madeProgress) {
             stuckTicks = 0;
+            if (isMovementAction(waypoint.action())) {
+                movementRecoveryFailures = 0;
+            }
         } else if (isProgressingMovement(waypoint.action())) {
             stuckTicks++;
         }
@@ -1647,7 +1714,11 @@ public final class MovementController {
         lastPlayerPos = playerPos;
 
         boolean movementAction = isProgressingMovement(waypoint.action());
-        if (movementAction && player.horizontalCollision) {
+        // A horizontal-collision flag is also raised while vanilla collision
+        // resolution is successfully sliding the entity along a wall. Replan only
+        // when the collision is accompanied by no useful motion; otherwise a
+        // harmless brush repeatedly discards a valid detour path.
+        if (movementAction && player.horizontalCollision && playerMoved <= PLAYER_MOVE_EPSILON) {
             horizontalCollisionTicks++;
         } else {
             horizontalCollisionTicks = 0;
@@ -1662,6 +1733,9 @@ public final class MovementController {
                 || stuckTicks >= STUCK_TICKS_LIMIT
                 || (movementAction && isTrappedInRecentArea(LOCAL_STALL_TICKS, LOCAL_STALL_AREA_BLOCKS))
                 || (movementAction && isTrappedInRecentArea(LOOP_STALL_TICKS, LOOP_STALL_AREA_BLOCKS))) {
+            if (movementAction) {
+                movementRecoveryFailures++;
+            }
             forceLocalReplan();
         }
     }
@@ -2011,18 +2085,82 @@ public final class MovementController {
         if (!jump
                 && !shouldJump
                 && !player.isInWater()
-                && client.level != null
-                && !client.level.noCollision(
-                        player,
-                        player.getBoundingBox().move(velocityX, 0.0, velocityZ).deflate(0.01)
-                )) {
-            velocityX = 0.0;
-            velocityZ = 0.0;
+                && client.level != null) {
+            Vec3 safeVelocity = collisionAdjustedHorizontalVelocity(
+                    client,
+                    player,
+                    velocityX,
+                    velocityY,
+                    velocityZ
+            );
+            velocityX = safeVelocity.x;
+            velocityZ = safeVelocity.z;
         }
 
         setDirectMovementState(player, sprint && !sneak);
         player.setDeltaMovement(velocityX, velocityY, velocityZ);
         sendPlayerInput(client, true, false, false, false, shouldJump, sneak, sprint && !sneak);
+    }
+
+    /**
+     * Projects a requested horizontal motion onto any collision-free axis. Vanilla
+     * movement resolves blocked axes independently; aggressive control must do the
+     * same instead of cancelling the whole vector when it merely brushes a wall.
+     */
+    private Vec3 collisionAdjustedHorizontalVelocity(
+            Minecraft client,
+            Entity entity,
+            double velocityX,
+            double velocityY,
+            double velocityZ
+    ) {
+        if (client.level == null) {
+            return new Vec3(velocityX, velocityY, velocityZ);
+        }
+        AABB bounds = entity.getBoundingBox().deflate(0.01);
+        if (client.level.noCollision(entity, bounds.move(velocityX, 0.0, velocityZ))) {
+            return new Vec3(velocityX, velocityY, velocityZ);
+        }
+
+        boolean xClear = Math.abs(velocityX) > 0.0001
+                && client.level.noCollision(entity, bounds.move(velocityX, 0.0, 0.0))
+                && hasSafeProjectedSupport(client, entity, velocityX, 0.0);
+        boolean zClear = Math.abs(velocityZ) > 0.0001
+                && client.level.noCollision(entity, bounds.move(0.0, 0.0, velocityZ))
+                && hasSafeProjectedSupport(client, entity, 0.0, velocityZ);
+        if (xClear && zClear) {
+            // The combined diagonal clips a corner. Preserve the component that
+            // contributes most to the requested heading, then let the next tick
+            // continue around the corner.
+            return Math.abs(velocityX) >= Math.abs(velocityZ)
+                    ? new Vec3(velocityX, velocityY, 0.0)
+                    : new Vec3(0.0, velocityY, velocityZ);
+        }
+        if (xClear) {
+            return new Vec3(velocityX, velocityY, 0.0);
+        }
+        if (zClear) {
+            return new Vec3(0.0, velocityY, velocityZ);
+        }
+        return new Vec3(0.0, velocityY, 0.0);
+    }
+
+    private boolean hasSafeProjectedSupport(
+            Minecraft client,
+            Entity entity,
+            double velocityX,
+            double velocityZ
+    ) {
+        if (!(entity instanceof LocalPlayer player) || player.isInWater() || !player.onGround()) {
+            return true;
+        }
+        BlockPos projectedFeet = BlockPos.containing(
+                entity.getX() + velocityX,
+                entity.getY(),
+                entity.getZ() + velocityZ
+        );
+        return isLiveBodyClear(client, projectedFeet)
+                && isSafeSolidSupport(client, projectedFeet.below());
     }
 
     private void setDirectMovementState(LocalPlayer player, boolean sprint) {
@@ -2224,6 +2362,7 @@ public final class MovementController {
         activeStepSignature = null;
         activeStepTicks = 0;
         actionFailures = 0;
+        movementRecoveryFailures = 0;
         pendingPlacementBlock = null;
         pendingPlacementTicks = 0;
         actionAcknowledged = false;

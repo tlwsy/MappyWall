@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,6 +27,33 @@ class PersistenceServiceTest {
         assertEquals(save.project().id(), loaded.project().id());
         assertEquals(save.route().size(), loaded.route().size());
         assertEquals(save.session().currentStep(), loaded.session().currentStep());
+    }
+
+    @Test
+    void savesAndLoadsMultipleMapIdsForOneRegion(@TempDir Path tempDir) throws Exception {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "map-aliases", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave save = planner.createSave(project);
+        RouteStep step = save.route().getFirst();
+        save = save.withBindings(List.of(
+                new MapBinding(
+                        step.wallPos(), step.region().signature(), 4, Instant.EPOCH, BindingVerification.MAP_STATE
+                ),
+                new MapBinding(
+                        step.wallPos(), step.region().signature(), 5, Instant.EPOCH, BindingVerification.MAP_STATE
+                )
+        ));
+        PersistenceService persistence = new PersistenceService();
+        Path path = persistence.projectPath(tempDir, project.serverKey(), project.dimension(), project.id());
+
+        persistence.save(path, save);
+
+        MapWallSave loaded = persistence.load(path).orElseThrow();
+        assertEquals(List.of(4, 5), loaded.bindingsForRegion(step.region().signature()).stream()
+                .map(MapBinding::mapId)
+                .toList());
     }
 
     @Test

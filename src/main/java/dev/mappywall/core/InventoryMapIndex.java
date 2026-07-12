@@ -19,128 +19,101 @@ public final class InventoryMapIndex {
         Objects.requireNonNull(save, "save");
         Objects.requireNonNull(observedMaps, "observedMaps");
         Objects.requireNonNull(repairedAt, "repairedAt");
-        Map<String, RouteStep> unboundByRegion = new HashMap<>();
         Map<String, RouteStep> routeByRegion = new HashMap<>();
-        Map<Integer, MapBinding> bindingByMapId = new HashMap<>();
-        Map<Integer, String> boundRegionByMapId = new HashMap<>();
-        Set<String> boundRegions = new HashSet<>();
-
-        for (MapBinding binding : save.bindings()) {
-            boundRegions.add(binding.regionSignature());
-            bindingByMapId.put(binding.mapId(), binding);
-            boundRegionByMapId.put(binding.mapId(), binding.regionSignature());
-        }
 
         for (RouteStep step : save.route()) {
             String signature = step.region().signature();
             routeByRegion.put(signature, step);
-            if (!boundRegions.contains(signature)) {
-                unboundByRegion.put(signature, step);
-            }
         }
 
         List<MapBinding> repaired = new ArrayList<>(save.bindings());
         NormalizedObservations normalizedObservations = normalizeObservedMaps(observedMaps);
         List<String> warnings = new ArrayList<>(normalizedObservations.warnings());
-        Map<String, List<ObservedMap>> candidatesByRegion = new java.util.TreeMap<>();
+        Set<Integer> trueConflictMapIds = new HashSet<>(normalizedObservations.conflictingMapIds());
 
-        for (ObservedMap observed : normalizedObservations.maps()) {
-            String signature = observed.regionSignature();
-            String alreadyBoundRegion = boundRegionByMapId.get(observed.mapId());
-            if (alreadyBoundRegion != null) {
-                RouteStep boundStep = routeByRegion.get(alreadyBoundRegion);
-                boolean matchesBoundRegion = boundStep != null && matchesObservedMap(boundStep, observed);
-                if (!matchesBoundRegion) {
-                    MapBinding binding = bindingByMapId.get(observed.mapId());
-                    if (binding != null
-                            && binding.verifiedBy() == BindingVerification.TARGET_CAPTURE
-                            && isWithinTargetCaptureGrace(binding, repairedAt)) {
-                        // Newly opened maps can briefly report a stale/default MapState on the client.
-                        // Trust target capture only for a short, persisted grace window.
-                        continue;
-                    } else {
-                        warnings.add("地图 " + observed.mapId()
-                                + " 已绑定到 " + alreadyBoundRegion
-                                + "，但现在读取为 " + signature);
-                        if (binding != null) {
-                            replaceVerification(repaired, binding, BindingVerification.PENDING_VERIFICATION);
-                        }
-                    }
-                }
-                continue;
-            }
-
+        for (ObservedMap observed : normalizedObservations.maps().stream()
+                .sorted(Comparator.comparingInt(ObservedMap::mapId))
+                .toList()) {
             String matchingSignature = matchingRouteRegion(routeByRegion, observed);
-            if (matchingSignature == null || boundRegions.contains(matchingSignature)) {
-                continue;
-            }
-            if (!unboundByRegion.containsKey(matchingSignature)) {
-                continue;
-            }
-
-            candidatesByRegion.computeIfAbsent(matchingSignature, ignored -> new ArrayList<>()).add(observed);
-        }
-
-        for (Map.Entry<String, List<ObservedMap>> entry : candidatesByRegion.entrySet()) {
-            String signature = entry.getKey();
-            RouteStep match = unboundByRegion.remove(signature);
-            if (match == null) {
-                continue;
-            }
-            List<ObservedMap> candidates = entry.getValue().stream()
-                    // Different map ids can legitimately describe the same route region.
-                    // Prefer the map requiring the fewest remaining zoom operations, then
-                    // use the id only as a stable tie-breaker.
-                    .sorted(Comparator.comparingInt(ObservedMap::scale).reversed()
-                            .thenComparingInt(ObservedMap::mapId))
-                    .toList();
-            ObservedMap observed = candidates.getFirst();
-            repaired.add(new MapBinding(
-                    match.wallPos(),
-                    signature,
-                    observed.mapId(),
-                    repairedAt,
-                    exactTargetScale(match, observed)
-                            ? BindingVerification.TARGET_SCALE
-                            : BindingVerification.MANUAL_REPAIR
-            ));
-            boundRegions.add(signature);
-            boundRegionByMapId.put(observed.mapId(), signature);
-        }
-
-        for (int index = 0; index < repaired.size(); index++) {
-            MapBinding binding = repaired.get(index);
-            if (binding.verifiedBy() != BindingVerification.TARGET_CAPTURE
-                    && binding.verifiedBy() != BindingVerification.PENDING_VERIFICATION) {
-                continue;
-            }
-            for (ObservedMap observed : normalizedObservations.maps()) {
-                RouteStep boundStep = routeByRegion.get(binding.regionSignature());
-                if (observed.mapId() == binding.mapId()
-                        && boundStep != null
-                        && matchesObservedMap(boundStep, observed)) {
-                    repaired.set(index, new MapBinding(
-                            binding.wallPos(),
-                            binding.regionSignature(),
-                            binding.mapId(),
-                            binding.openedAt(),
-                            exactTargetScale(boundStep, observed)
-                                    ? BindingVerification.TARGET_SCALE
-                                    : BindingVerification.MAP_STATE
-                    ));
-                    break;
+            RouteStep observedStep = matchingSignature == null ? null : routeByRegion.get(matchingSignature);
+            MapBinding existing = findBindingByMapId(repaired, observed.mapId());
+            if (existing != null) {
+                RouteStep boundStep = routeByRegion.get(existing.regionSignature());
+                boolean matchesBoundRegion = boundStep != null && matchesObservedMap(boundStep, observed);
+                if (matchesBoundRegion) {
+                    if (existing.verifiedBy() == BindingVerification.TARGET_CAPTURE
+                            || existing.verifiedBy() == BindingVerification.PENDING_VERIFICATION) {
+                        replaceVerification(
+                                repaired,
+                                existing,
+                                exactTargetScale(boundStep, observed)
+                                        ? BindingVerification.TARGET_SCALE
+                                        : BindingVerification.MAP_STATE
+                        );
+                    }
+                    continue;
                 }
+
+                if (existing.verifiedBy() == BindingVerification.TARGET_CAPTURE
+                        && isWithinTargetCaptureGrace(existing, repairedAt)) {
+                    // A newly allocated id can briefly expose stale/default state.
+                    continue;
+                }
+
+                // One positive MapState is authoritative over a stale persisted
+                // association, regardless of how the old association was verified.
+                // Reassign it when it belongs to this route, otherwise simply release
+                // it. If another job still claims a different region, the cross-job
+                // index will surface the actual rare conflict and list those jobs.
+                removeBinding(repaired, existing.mapId());
+                if (observedStep != null) {
+                    repaired.add(observedBinding(observedStep, observed, repairedAt));
+                }
+                continue;
+            }
+
+            if (observedStep != null) {
+                // Every distinct id for the same region is useful: the player may hang
+                // any one of them.  Persist all aliases instead of choosing one and
+                // treating the remainder as ambiguous.
+                repaired.add(observedBinding(observedStep, observed, repairedAt));
             }
         }
 
         for (MapBinding binding : repaired) {
             if (binding.verifiedBy() == BindingVerification.PENDING_VERIFICATION) {
+                trueConflictMapIds.add(binding.mapId());
                 warnings.add("地图 " + binding.mapId()
                         + " 的绑定仍等待正确 MapState 验证；将地图移出背包不会自动解除冲突");
             }
         }
 
-        return new BindingRepairResult(repaired, warnings);
+        return new BindingRepairResult(repaired, warnings, trueConflictMapIds);
+    }
+
+    private MapBinding observedBinding(RouteStep step, ObservedMap observed, Instant repairedAt) {
+        return new MapBinding(
+                step.wallPos(),
+                step.region().signature(),
+                observed.mapId(),
+                repairedAt,
+                exactTargetScale(step, observed)
+                        ? BindingVerification.TARGET_SCALE
+                        : BindingVerification.MANUAL_REPAIR
+        );
+    }
+
+    private MapBinding findBindingByMapId(List<MapBinding> bindings, int mapId) {
+        for (MapBinding binding : bindings) {
+            if (binding.mapId() == mapId) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    private void removeBinding(List<MapBinding> bindings, int mapId) {
+        bindings.removeIf(binding -> binding.mapId() == mapId);
     }
 
     private NormalizedObservations normalizeObservedMaps(List<ObservedMap> observedMaps) {
@@ -161,7 +134,7 @@ public final class InventoryMapIndex {
                 .filter(entry -> !conflictingMapIds.contains(entry.getKey()))
                 .map(Map.Entry::getValue)
                 .toList();
-        return new NormalizedObservations(normalized, warnings);
+        return new NormalizedObservations(normalized, warnings, conflictingMapIds);
     }
 
     private boolean sameMapState(ObservedMap left, ObservedMap right) {
@@ -243,10 +216,15 @@ public final class InventoryMapIndex {
                 && step.region().signature().equals(observed.regionSignature());
     }
 
-    private record NormalizedObservations(List<ObservedMap> maps, List<String> warnings) {
+    private record NormalizedObservations(
+            List<ObservedMap> maps,
+            List<String> warnings,
+            Set<Integer> conflictingMapIds
+    ) {
         private NormalizedObservations {
             maps = List.copyOf(maps);
             warnings = List.copyOf(warnings);
+            conflictingMapIds = Set.copyOf(conflictingMapIds);
         }
     }
 }

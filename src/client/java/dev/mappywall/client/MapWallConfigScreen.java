@@ -103,6 +103,12 @@ public final class MapWallConfigScreen extends Screen {
             button.setMessage(postOpenLabel());
         }).bounds(left, y + 144, 200, 20).build());
 
+        addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.navigation.open"), button -> {
+            wallWidth = readWidthValue();
+            wallHeight = readHeightValue();
+            runtime.openNavigationSettingsScreen(Minecraft.getInstance(), this);
+        }).bounds(left, y + 168, 98, 20).build());
+
         addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.start"), button -> {
             wallWidth = readWidthValue();
             wallHeight = readHeightValue();
@@ -119,7 +125,7 @@ public final class MapWallConfigScreen extends Screen {
                     mode.isAutomatic() ? automationStyle : AutomationStyle.NORMAL
             );
             onClose();
-        }).bounds(left, y + 168, 200, 20).build());
+        }).bounds(left + 102, y + 168, 98, 20).build());
 
         addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.close"), button -> onClose())
                 .bounds(left, y + 192, 200, 20)

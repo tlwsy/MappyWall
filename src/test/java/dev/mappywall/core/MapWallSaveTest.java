@@ -61,6 +61,29 @@ class MapWallSaveTest {
     }
 
     @Test
+    void allowsDifferentMapIdsForSameRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallSave save = planner.createSave(planner.createProject(
+                "p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        ));
+        RouteStep step = save.route().getFirst();
+
+        MapWallSave normalized = save.withBindings(List.of(
+                new MapBinding(
+                        step.wallPos(), step.region().signature(), 4, Instant.EPOCH, BindingVerification.MAP_STATE
+                ),
+                new MapBinding(
+                        step.wallPos(), step.region().signature(), 5, Instant.EPOCH, BindingVerification.MAP_STATE
+                )
+        ));
+
+        assertEquals(List.of(4, 5), normalized.bindingsForRegion(step.region().signature()).stream()
+                .map(MapBinding::mapId)
+                .toList());
+        assertEquals(4, normalized.preferredBindingForRegion(step.region().signature()).orElseThrow().mapId());
+    }
+
+    @Test
     void rejectsSameMapIdBoundToDifferentRegions() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallSave save = planner.createSave(planner.createProject(

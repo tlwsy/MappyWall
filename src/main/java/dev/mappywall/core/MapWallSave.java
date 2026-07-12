@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 public record MapWallSave(
         int schemaVersion,
@@ -44,6 +45,74 @@ public record MapWallSave(
 
     public MapWallSave withSession(RunSessionState newSession) {
         return new MapWallSave(schemaVersion, project, route, bindings, newSession);
+    }
+
+    /** Returns every map id associated with a route region, including zoom ancestors. */
+    public List<MapBinding> bindingsForRegion(String regionSignature) {
+        Objects.requireNonNull(regionSignature, "regionSignature");
+        return bindings.stream()
+                .filter(binding -> binding.regionSignature().equals(regionSignature))
+                .toList();
+    }
+
+    /**
+     * Returns only maps that are actually suitable for the finished wall. Lower-scale
+     * zoom ancestors remain useful automation state, but they are not interchangeable
+     * hanging choices for a higher-scale target.
+     */
+    public List<MapBinding> finalBindingsForRegion(String regionSignature) {
+        RouteStep step = route.stream()
+                .filter(candidate -> candidate.region().signature().equals(regionSignature))
+                .findFirst()
+                .orElse(null);
+        if (step == null) {
+            return List.of();
+        }
+        return bindingsForRegion(regionSignature).stream()
+                .filter(binding -> step.region().scale() == 0
+                        ? binding.verifiedBy() == BindingVerification.MAP_STATE
+                                || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
+                                || binding.verifiedBy() == BindingVerification.TARGET_SCALE
+                        : binding.verifiedBy() == BindingVerification.TARGET_SCALE)
+                .toList();
+    }
+
+    public List<MapBinding> finalBindings() {
+        Map<String, Integer> scaleByRegion = new HashMap<>();
+        for (RouteStep step : route) {
+            scaleByRegion.put(step.region().signature(), step.region().scale());
+        }
+        return bindings.stream()
+                .filter(binding -> {
+                    Integer scale = scaleByRegion.get(binding.regionSignature());
+                    if (scale == null) {
+                        return false;
+                    }
+                    return scale == 0
+                            ? binding.verifiedBy() == BindingVerification.MAP_STATE
+                                    || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
+                                    || binding.verifiedBy() == BindingVerification.TARGET_SCALE
+                            : binding.verifiedBy() == BindingVerification.TARGET_SCALE;
+                })
+                .toList();
+    }
+
+    /**
+     * Chooses the most useful representative of a region while retaining every alias
+     * in {@link #bindings()}.  Callers that need one map for filling or zooming should
+     * use this instead of depending on list order.
+     */
+    public Optional<MapBinding> preferredBindingForRegion(String regionSignature) {
+        return bindingsForRegion(regionSignature).stream()
+                .max(java.util.Comparator
+                        .comparingInt((MapBinding binding) -> verificationStrength(binding.verifiedBy()))
+                        .thenComparing(java.util.Comparator.comparingInt(MapBinding::mapId).reversed()));
+    }
+
+    public Optional<MapBinding> bindingForMapId(int mapId) {
+        return bindings.stream()
+                .filter(binding -> binding.mapId() == mapId)
+                .findFirst();
     }
 
     private static MapWallProject resolveLegacyDirections(MapWallProject project, List<RouteStep> route) {
@@ -145,7 +214,7 @@ public record MapWallSave(
     }
 
     private static List<MapBinding> normalizeBindings(List<MapBinding> bindings) {
-        LinkedHashMap<String, MapBinding> byRegion = new LinkedHashMap<>();
+        LinkedHashMap<Integer, MapBinding> byMapId = new LinkedHashMap<>();
         Map<Integer, String> regionByMapId = new HashMap<>();
         Map<WallPos, String> regionByWallPosition = new HashMap<>();
         for (MapBinding binding : List.copyOf(bindings)) {
@@ -159,17 +228,18 @@ public record MapWallSave(
                 throw new IllegalArgumentException("wall position " + binding.wallPos() + " is bound to multiple regions");
             }
 
-            MapBinding existing = byRegion.get(binding.regionSignature());
+            MapBinding existing = byMapId.get(binding.mapId());
             if (existing == null) {
-                byRegion.put(binding.regionSignature(), binding);
+                byMapId.put(binding.mapId(), binding);
                 continue;
             }
-            if (existing.mapId() != binding.mapId() || !existing.wallPos().equals(binding.wallPos())) {
-                throw new IllegalArgumentException("region " + binding.regionSignature() + " has conflicting bindings");
+            if (!existing.regionSignature().equals(binding.regionSignature())
+                    || !existing.wallPos().equals(binding.wallPos())) {
+                throw new IllegalArgumentException("map id " + binding.mapId() + " has conflicting bindings");
             }
-            byRegion.put(binding.regionSignature(), mergeDuplicateBinding(existing, binding));
+            byMapId.put(binding.mapId(), mergeDuplicateBinding(existing, binding));
         }
-        return List.copyOf(byRegion.values());
+        return List.copyOf(byMapId.values());
     }
 
     private static MapBinding mergeDuplicateBinding(MapBinding left, MapBinding right) {

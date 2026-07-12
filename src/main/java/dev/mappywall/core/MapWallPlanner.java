@@ -240,10 +240,8 @@ public final class MapWallPlanner {
                 save.session()
         );
         Set<String> boundRegions = new HashSet<>();
-        java.util.Map<String, MapBinding> bindingByRegion = new java.util.HashMap<>();
         for (MapBinding binding : normalized.bindings()) {
             boundRegions.add(binding.regionSignature());
-            bindingByRegion.put(binding.regionSignature(), binding);
         }
 
         String previousFillRegion = firstOpenFillRegion(save.route(), save.bindings());
@@ -255,12 +253,12 @@ public final class MapWallPlanner {
                 if (save.project().postOpenMode() == PostOpenMode.FILL_AFTER_OPEN) {
                     state = state == RouteStepState.BOUND ? RouteStepState.BOUND : RouteStepState.OPENED;
                 } else {
-                    MapBinding binding = bindingByRegion.get(step.region().signature());
-                    boolean targetScaleReady = step.region().scale() == 0
-                            ? binding.verifiedBy() == BindingVerification.MAP_STATE
-                                    || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
-                                    || binding.verifiedBy() == BindingVerification.TARGET_SCALE
-                            : binding.verifiedBy() == BindingVerification.TARGET_SCALE;
+                    boolean targetScaleReady = normalized.bindingsForRegion(step.region().signature()).stream()
+                            .anyMatch(binding -> step.region().scale() == 0
+                                    ? binding.verifiedBy() == BindingVerification.MAP_STATE
+                                            || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
+                                            || binding.verifiedBy() == BindingVerification.TARGET_SCALE
+                                    : binding.verifiedBy() == BindingVerification.TARGET_SCALE);
                     state = targetScaleReady ? RouteStepState.BOUND : RouteStepState.OPENED;
                 }
             } else if (state == RouteStepState.OPENED || state == RouteStepState.BOUND) {
@@ -286,7 +284,7 @@ public final class MapWallPlanner {
 
         boolean complete = route.stream().allMatch(step -> step.state() == RouteStepState.BOUND);
         ProjectStatus status = save.project().status();
-        if (complete) {
+        if (complete && status != ProjectStatus.CONFLICT && status != ProjectStatus.STOPPED) {
             status = ProjectStatus.COMPLETE;
         } else if (status == ProjectStatus.COMPLETE) {
             status = ProjectStatus.RUNNING;
@@ -305,6 +303,12 @@ public final class MapWallPlanner {
             return null;
         }
         for (RouteStep step : save.route()) {
+            if (!hasBinding(save, step.region().signature())) {
+                // A wrong-region opening may legitimately pre-bind a later route
+                // cell. Do not let that future alias pull navigation away from the
+                // earliest missing cell; open the replacement first.
+                return null;
+            }
             if (step.state() == RouteStepState.OPENED && hasBinding(save, step.region().signature())) {
                 return step;
             }

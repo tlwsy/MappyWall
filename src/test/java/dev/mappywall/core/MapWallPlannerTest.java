@@ -103,6 +103,57 @@ class MapWallPlannerTest {
     }
 
     @Test
+    void reconciliationDoesNotHideConflictOnOtherwiseCompleteRoute() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "conflict-complete", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave complete = planner.bindCurrentStep(
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.MAP_STATE
+        );
+        MapWallSave conflict = complete
+                .withProject(complete.project().withStatus(ProjectStatus.CONFLICT))
+                .withSession(complete.session().withPaused(true).withWarnings(List.of("conflict")));
+
+        MapWallSave reconciled = planner.reconcileBindings(conflict, conflict.bindings());
+
+        assertEquals(ProjectStatus.CONFLICT, reconciled.project().status());
+    }
+
+    @Test
+    void fillAfterOpenDoesNotSkipEarlierUnboundCellForFutureAlias() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "future-alias",
+                "local",
+                "minecraft:overworld",
+                0,
+                2,
+                1,
+                0,
+                0,
+                RunMode.AUTO_WALK,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.FILL_AFTER_OPEN,
+                AutomationStyle.AGGRESSIVE
+        );
+        MapWallSave save = planner.createSave(project);
+        RouteStep future = save.route().get(1);
+        save = planner.reconcileBindings(save, List.of(new MapBinding(
+                future.wallPos(),
+                future.region().signature(),
+                9,
+                Instant.EPOCH,
+                BindingVerification.MAP_STATE
+        )));
+
+        assertNull(planner.nextFillStep(save));
+        assertEquals(save.route().getFirst(), planner.nextOpenStep(save));
+    }
+
+    @Test
     void openFirstAtLargerScaleWaitsForTargetScaleVerification() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject(
@@ -268,6 +319,37 @@ class MapWallPlannerTest {
         assertEquals(first, unchanged);
         assertEquals(1, unchanged.bindings().size());
         assertEquals(1, unchanged.session().currentStep());
+    }
+
+    @Test
+    void weakerAliasDoesNotDowngradeVerifiedRegionCompletion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "aliases", "local", "minecraft:overworld", 1, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave save = planner.createSave(project);
+        RouteStep step = save.route().getFirst();
+
+        MapWallSave reconciled = planner.reconcileBindings(save, List.of(
+                new MapBinding(
+                        step.wallPos(),
+                        step.region().signature(),
+                        4,
+                        Instant.EPOCH,
+                        BindingVerification.TARGET_SCALE
+                ),
+                new MapBinding(
+                        step.wallPos(),
+                        step.region().signature(),
+                        5,
+                        Instant.EPOCH,
+                        BindingVerification.TARGET_CAPTURE
+                )
+        ));
+
+        assertEquals(RouteStepState.BOUND, reconciled.route().getFirst().state());
+        assertEquals(ProjectStatus.COMPLETE, reconciled.project().status());
+        assertEquals(4, reconciled.preferredBindingForRegion(step.region().signature()).orElseThrow().mapId());
     }
 
     @Test

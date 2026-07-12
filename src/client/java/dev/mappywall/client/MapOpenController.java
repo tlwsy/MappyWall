@@ -21,9 +21,12 @@ import net.minecraft.world.item.Items;
 
 public final class MapOpenController {
     private static final int OPEN_WAIT_TICKS = 120;
+    private static final int WRONG_REGION_RETRY_COOLDOWN_TICKS = 10;
     private final InventoryMapScanner scanner;
     private int cooldownTicks;
     private PendingOpening pendingOpening;
+    private String stableOpeningRegion;
+    private int stableOpeningTicks;
 
     public MapOpenController(InventoryMapScanner scanner) {
         this.scanner = scanner;
@@ -32,6 +35,8 @@ public final class MapOpenController {
     public void reset() {
         cooldownTicks = 0;
         pendingOpening = null;
+        stableOpeningRegion = null;
+        stableOpeningTicks = 0;
     }
 
     public MapOpenAttempt tryOpenMapInRegion(Minecraft client, RouteStep target) {
@@ -39,6 +44,7 @@ public final class MapOpenController {
             PendingOpening pending = pendingOpening;
             if (!pending.regionSignature().equals(target.region().signature())) {
                 pendingOpening = null;
+                resetStableOpeningPosition();
                 cooldownTicks = Math.max(cooldownTicks, 4);
                 return MapOpenAttempt.none();
             }
@@ -48,10 +54,25 @@ public final class MapOpenController {
                 cooldownTicks = 10;
                 return MapOpenAttempt.opened(completed.get());
             }
+            Optional<Integer> rejected = findRejectedOpening(client, target);
+            if (rejected.isPresent()) {
+                pendingOpening = null;
+                resetStableOpeningPosition();
+                cooldownTicks = WRONG_REGION_RETRY_COOLDOWN_TICKS;
+                scanner.invalidateInventorySnapshot();
+                if (client.player != null) {
+                    client.player.sendSystemMessage(Component.translatable(
+                            "message.mappywall.open_wrong_region_retry",
+                            rejected.get()
+                    ).withStyle(ChatFormatting.YELLOW));
+                }
+                return MapOpenAttempt.none();
+            }
             PendingOpening nextPending = pending.tick();
             pendingOpening = nextPending;
             if (nextPending.ticksRemaining() <= 0) {
                 pendingOpening = null;
+                resetStableOpeningPosition();
                 cooldownTicks = 40;
                 return MapOpenAttempt.pause(Component.translatable("message.mappywall.open_unverified"));
             }
@@ -64,7 +85,10 @@ public final class MapOpenController {
         }
 
         LocalPlayer player = client.player;
-        if (player == null || client.gameMode == null || !isSafeInventoryContext(client, player)) {
+        if (player == null
+                || client.gameMode == null
+                || !hasStableOpeningPosition(client, target)
+                || !isSafeInventoryContext(client, player)) {
             return MapOpenAttempt.none();
         }
 
@@ -138,15 +162,97 @@ public final class MapOpenController {
         if (verifiedCandidates.size() == 1) {
             return Optional.of(verifiedCandidates.getFirst());
         }
+        return Optional.empty();
+    }
+
+    private Optional<Integer> findRejectedOpening(Minecraft client, RouteStep target) {
         Set<Integer> newMapIds = new HashSet<>(currentFilledMapIds(client));
         newMapIds.removeAll(pendingOpening.knownMapIds());
+        if (newMapIds.isEmpty()) {
+            return Optional.empty();
+        }
+
+        Integer selectedMapId = readPendingSlotMapId(client);
         if (selectedMapId != null && newMapIds.contains(selectedMapId)) {
-            return Optional.of(selectedMapId);
+            return scanner.scanFilledMaps(client).stream()
+                    .filter(observed -> observed.mapId() == selectedMapId)
+                    .filter(observed -> !matchesOpeningTarget(observed, target))
+                    .map(ObservedMap::mapId)
+                    .findFirst();
         }
-        if (newMapIds.size() == 1) {
-            return Optional.of(newMapIds.iterator().next());
+        if (newMapIds.size() != 1) {
+            return Optional.empty();
         }
-        return Optional.empty();
+
+        int newMapId = newMapIds.iterator().next();
+        return scanner.scanFilledMaps(client).stream()
+                .filter(observed -> observed.mapId() == newMapId)
+                .filter(observed -> !matchesOpeningTarget(observed, target))
+                .map(ObservedMap::mapId)
+                .findFirst();
+    }
+
+    /**
+     * Mirrors vanilla empty-map centering: first derive the scale-0 map created at
+     * the player's position, then project that map center into the route scale.
+     */
+    public boolean canOpenAtCurrentPosition(Minecraft client, RouteStep target) {
+        if (client.player == null || client.level == null) {
+            return false;
+        }
+        String dimension = client.level.dimension().identifier().toString();
+        if (!dimension.equals(target.region().dimension())) {
+            return false;
+        }
+        return positionMapsToTarget(dimension, client.player.getX(), client.player.getZ(), target);
+    }
+
+    private boolean hasStableOpeningPosition(Minecraft client, RouteStep target) {
+        if (client.player == null || client.level == null || !isSafeInventoryContext(client, client.player)) {
+            resetStableOpeningPosition();
+            return false;
+        }
+        String dimension = client.level.dimension().identifier().toString();
+        double predictedX = client.player.getX() + client.player.getDeltaMovement().x * 3.0;
+        double predictedZ = client.player.getZ() + client.player.getDeltaMovement().z * 3.0;
+        boolean safeNow = positionMapsToTarget(
+                dimension,
+                client.player.getX(),
+                client.player.getZ(),
+                target
+        );
+        boolean safePredicted = positionMapsToTarget(dimension, predictedX, predictedZ, target);
+        String signature = target.region().signature();
+        if (!safeNow || !safePredicted) {
+            resetStableOpeningPosition();
+            return false;
+        }
+        if (signature.equals(stableOpeningRegion)) {
+            stableOpeningTicks++;
+        } else {
+            stableOpeningRegion = signature;
+            stableOpeningTicks = 1;
+        }
+        return stableOpeningTicks >= 3;
+    }
+
+    private void resetStableOpeningPosition() {
+        stableOpeningRegion = null;
+        stableOpeningTicks = 0;
+    }
+
+    private boolean positionMapsToTarget(String dimension, double x, double z, RouteStep target) {
+        if (!dimension.equals(target.region().dimension())) {
+            return false;
+        }
+        MapRegion scaleZeroRegion = MapRegionMath.regionForBlock(dimension, 0, x, z);
+        MapRegion projected = MapRegionMath.regionForBlock(
+                dimension,
+                target.region().scale(),
+                scaleZeroRegion.centerX(),
+                scaleZeroRegion.centerZ()
+        );
+        return projected.signature().equals(target.region().signature());
     }
 
     private boolean matchesOpeningTarget(ObservedMap observed, RouteStep target) {
