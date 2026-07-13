@@ -134,7 +134,8 @@ public final class InventoryMapScanner {
                 data.scale,
                 data.centerX,
                 data.centerZ,
-                coverage.exploredFraction()
+                coverage.exploredFraction(),
+                false
         ));
     }
 

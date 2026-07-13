@@ -70,7 +70,8 @@ public record MapWallSave(
         }
         return bindingsForRegion(regionSignature).stream()
                 .filter(binding -> step.region().scale() == 0
-                        ? binding.verifiedBy() == BindingVerification.MAP_STATE
+                        ? binding.verifiedBy() == BindingVerification.POSITION_CAPTURE
+                                || binding.verifiedBy() == BindingVerification.MAP_STATE
                                 || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
                                 || binding.verifiedBy() == BindingVerification.TARGET_SCALE
                         : binding.verifiedBy() == BindingVerification.TARGET_SCALE)
@@ -89,7 +90,8 @@ public record MapWallSave(
                         return false;
                     }
                     return scale == 0
-                            ? binding.verifiedBy() == BindingVerification.MAP_STATE
+                            ? binding.verifiedBy() == BindingVerification.POSITION_CAPTURE
+                                    || binding.verifiedBy() == BindingVerification.MAP_STATE
                                     || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
                                     || binding.verifiedBy() == BindingVerification.TARGET_SCALE
                             : binding.verifiedBy() == BindingVerification.TARGET_SCALE;
@@ -254,7 +256,8 @@ public record MapWallSave(
         return switch (verification) {
             case PENDING_VERIFICATION -> 0;
             case TARGET_CAPTURE -> 1;
-            case MANUAL_REPAIR -> 2;
+            case MANUAL_REPAIR -> 1;
+            case POSITION_CAPTURE -> 2;
             case MAP_STATE -> 3;
             case TARGET_SCALE -> 4;
         };

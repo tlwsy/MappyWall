@@ -2,6 +2,7 @@ package dev.mappywall.core;
 
 public enum BindingVerification {
     TARGET_CAPTURE,
+    POSITION_CAPTURE,
     MAP_STATE,
     TARGET_SCALE,
     MANUAL_REPAIR,

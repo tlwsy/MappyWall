@@ -57,6 +57,106 @@ class PersistenceServiceTest {
     }
 
     @Test
+    void savesAndLoadsPendingCartographyLineage(@TempDir Path tempDir) throws Exception {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "pending-zoom", "local", "minecraft:overworld", 2, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        PendingMapZoom pending = new PendingMapZoom(
+                planner.planRoute(project).getFirst().region().signature(),
+                4,
+                1,
+                java.util.Set.of(4, 8, 11),
+                2,
+                Instant.parse("2026-07-13T00:00:00Z")
+        );
+        MapWallSave initial = planner.createSave(project);
+        MapWallSave save = initial.withSession(initial.session()
+                .withPendingMapZoom(pending)
+                .withKnownMapScale(12, 1));
+        PersistenceService persistence = new PersistenceService();
+        Path path = persistence.projectPath(tempDir, project.serverKey(), project.dimension(), project.id());
+
+        persistence.save(path, save);
+
+        MapWallSave loaded = persistence.load(path).orElseThrow();
+        assertEquals(pending, loaded.session().pendingMapZoom());
+        assertEquals(1, loaded.session().knownScaleForMapId(12));
+    }
+
+    @Test
+    void loadsLegacyPendingCartographyWithoutTimestampAsStale(@TempDir Path tempDir) throws Exception {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-pending-zoom", "local", "minecraft:overworld", 2, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        PendingMapZoom pending = new PendingMapZoom(
+                planner.planRoute(project).getFirst().region().signature(),
+                4,
+                1,
+                java.util.Set.of(4),
+                1,
+                Instant.parse("2026-07-13T00:00:00Z")
+        );
+        MapWallSave initial = planner.createSave(project);
+        MapWallSave save = initial.withSession(initial.session().withPendingMapZoom(pending));
+        PersistenceService persistence = new PersistenceService();
+        Path path = persistence.projectPath(tempDir, project.serverKey(), project.dimension(), project.id());
+        persistence.save(path, save);
+        String legacyJson = Files.readString(path).replaceFirst(
+                ",\\s*\"startedAt\"\\s*:\\s*\"[^\"]+\"",
+                ""
+        );
+        Files.writeString(path, legacyJson);
+
+        PendingMapZoom loaded = persistence.load(path).orElseThrow().session().pendingMapZoom();
+
+        assertEquals(Instant.EPOCH, loaded.startedAt());
+    }
+
+    @Test
+    void loadsLegacySessionWithoutMapScaleLineage(@TempDir Path tempDir) throws Exception {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-scale-lineage", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        PersistenceService persistence = new PersistenceService();
+        Path path = persistence.projectPath(tempDir, project.serverKey(), project.dimension(), project.id());
+        persistence.save(path, planner.createSave(project));
+        String legacyJson = Files.readString(path).replaceFirst(
+                ",\\s*\"knownMapScales\"\\s*:\\s*\\{[^}]*}",
+                ""
+        );
+        Files.writeString(path, legacyJson);
+
+        RunSessionState loaded = persistence.load(path).orElseThrow().session();
+
+        assertTrue(loaded.knownMapScales().isEmpty());
+    }
+
+    @Test
+    void savesAndLoadsPendingMapOpeningLineage(@TempDir Path tempDir) throws Exception {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "pending-open", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        PendingMapOpening pending = new PendingMapOpening(
+                planner.planRoute(project).getFirst().region().signature(),
+                java.util.Set.of(4, 8),
+                7,
+                Instant.EPOCH
+        );
+        MapWallSave initial = planner.createSave(project);
+        MapWallSave save = initial.withSession(initial.session().withPendingMapOpening(pending));
+        PersistenceService persistence = new PersistenceService();
+        Path path = persistence.projectPath(tempDir, project.serverKey(), project.dimension(), project.id());
+
+        persistence.save(path, save);
+
+        assertEquals(pending, persistence.load(path).orElseThrow().session().pendingMapOpening());
+    }
+
+    @Test
     void recoversLastGoodBackupWhenPrimaryJsonIsTruncated(@TempDir Path tempDir) throws Exception {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject(
@@ -140,5 +240,31 @@ class PersistenceServiceTest {
         assertEquals(-1, loaded.project().columnStepX());
         assertEquals(-1, loaded.project().rowStepZ());
         assertFalse(loaded.route().isEmpty());
+    }
+
+    @Test
+    void loadsMissingBindingRevisionAsLegacyAndMigratesIt(@TempDir Path tempDir) throws Exception {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-binding-revision", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+        PersistenceService persistence = new PersistenceService();
+        Path path = persistence.projectPath(tempDir, project.serverKey(), project.dimension(), project.id());
+        MapWallSave save = planner.bindCurrentStep(
+                planner.createSave(project), 4, Instant.EPOCH, BindingVerification.MAP_STATE
+        );
+        persistence.save(path, save);
+        String legacyJson = Files.readString(path).replaceFirst(
+                ",\\s*\"bindingDataVersion\"\\s*:\\s*1",
+                ""
+        );
+        Files.writeString(path, legacyJson);
+
+        MapWallSave loaded = persistence.load(path).orElseThrow();
+        MapWallSave migrated = planner.migrateLegacyBindingData(loaded);
+
+        assertEquals(0, loaded.session().bindingDataVersion());
+        assertEquals(RunSessionState.CURRENT_BINDING_DATA_VERSION, migrated.session().bindingDataVersion());
+        assertEquals(BindingVerification.TARGET_CAPTURE, migrated.bindings().getFirst().verifiedBy());
     }
 }

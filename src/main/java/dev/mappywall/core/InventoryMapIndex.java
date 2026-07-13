@@ -34,14 +34,22 @@ public final class InventoryMapIndex {
         for (ObservedMap observed : normalizedObservations.maps().stream()
                 .sorted(Comparator.comparingInt(ObservedMap::mapId))
                 .toList()) {
+            MapBinding existing = findBindingByMapId(repaired, observed.mapId());
+            if (!observed.regionReliable()) {
+                // Vanilla's clientbound map packet omits center coordinates. The
+                // client-side MapItemSavedData therefore carries placeholder 0,0
+                // coordinates which must never create, move, or erase a binding.
+                continue;
+            }
+
             String matchingSignature = matchingRouteRegion(routeByRegion, observed);
             RouteStep observedStep = matchingSignature == null ? null : routeByRegion.get(matchingSignature);
-            MapBinding existing = findBindingByMapId(repaired, observed.mapId());
             if (existing != null) {
                 RouteStep boundStep = routeByRegion.get(existing.regionSignature());
                 boolean matchesBoundRegion = boundStep != null && matchesObservedMap(boundStep, observed);
                 if (matchesBoundRegion) {
                     if (existing.verifiedBy() == BindingVerification.TARGET_CAPTURE
+                            || existing.verifiedBy() == BindingVerification.POSITION_CAPTURE
                             || existing.verifiedBy() == BindingVerification.PENDING_VERIFICATION) {
                         replaceVerification(
                                 repaired,
@@ -54,7 +62,8 @@ public final class InventoryMapIndex {
                     continue;
                 }
 
-                if (existing.verifiedBy() == BindingVerification.TARGET_CAPTURE
+                if ((existing.verifiedBy() == BindingVerification.TARGET_CAPTURE
+                                || existing.verifiedBy() == BindingVerification.POSITION_CAPTURE)
                         && isWithinTargetCaptureGrace(existing, repairedAt)) {
                     // A newly allocated id can briefly expose stale/default state.
                     continue;
@@ -123,7 +132,16 @@ public final class InventoryMapIndex {
         for (ObservedMap observed : observedMaps) {
             Objects.requireNonNull(observed, "observed map");
             ObservedMap existing = byMapId.putIfAbsent(observed.mapId(), observed);
-            if (existing == null || sameMapState(existing, observed)) {
+            if (existing == null) {
+                continue;
+            }
+            if (!existing.regionReliable() && observed.regionReliable()) {
+                byMapId.put(observed.mapId(), observed);
+                continue;
+            }
+            if (!observed.regionReliable()
+                    || (!existing.regionReliable() && !observed.regionReliable())
+                    || sameMapState(existing, observed)) {
                 continue;
             }
             if (conflictingMapIds.add(observed.mapId())) {

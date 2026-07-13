@@ -4,9 +4,7 @@ import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.ObservedMap;
 import dev.mappywall.core.MapRegion;
 import dev.mappywall.core.MapRegionMath;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
+import dev.mappywall.core.OpenedMapIdResolver;
 import java.util.Optional;
 import java.util.Set;
 import net.minecraft.ChatFormatting;
@@ -14,6 +12,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
@@ -23,6 +22,7 @@ public final class MapOpenController {
     private static final int OPEN_WAIT_TICKS = 120;
     private static final int WRONG_REGION_RETRY_COOLDOWN_TICKS = 10;
     private final InventoryMapScanner scanner;
+    private final OpenedMapIdResolver openedMapIdResolver = new OpenedMapIdResolver();
     private int cooldownTicks;
     private PendingOpening pendingOpening;
     private String stableOpeningRegion;
@@ -133,14 +133,22 @@ public final class MapOpenController {
             return MapOpenAttempt.none();
         }
 
+        int expectedOutputSlot = MapOpeningSlots.expectedOutputSlot(player, openingHand);
+        if (expectedOutputSlot == MapOpeningSlots.INVALID_SLOT) {
+            cooldownTicks = 40;
+            return MapOpenAttempt.none();
+        }
         Set<Integer> knownMapIds = currentFilledMapIds(client);
-        client.gameMode.useItem(player, openingHand);
+        InteractionResult useResult = client.gameMode.useItem(player, openingHand);
+        if (!useResult.consumesAction()) {
+            cooldownTicks = 8;
+            return MapOpenAttempt.none();
+        }
         scanner.invalidateInventorySnapshot();
         pendingOpening = new PendingOpening(
                 target.region().signature(),
                 knownMapIds,
-                openingHand,
-                hotbarSlot,
+                expectedOutputSlot,
                 OPEN_WAIT_TICKS
         );
         cooldownTicks = 4;
@@ -149,44 +157,41 @@ public final class MapOpenController {
 
     private Optional<Integer> findCompletedOpening(Minecraft client, RouteStep target) {
         Integer selectedMapId = readPendingSlotMapId(client);
-        List<Integer> verifiedCandidates = new ArrayList<>();
-        for (ObservedMap observed : scanner.scanFilledMaps(client)) {
-            if (!pendingOpening.knownMapIds().contains(observed.mapId())
-                    && matchesOpeningTarget(observed, target)) {
-                verifiedCandidates.add(observed.mapId());
-            }
+        Optional<Integer> openedMapId = openedMapIdResolver.resolve(
+                pendingOpening.knownMapIds(),
+                currentFilledMapIds(client),
+                selectedMapId
+        );
+        if (openedMapId.isEmpty()) {
+            return Optional.empty();
         }
-        if (selectedMapId != null && verifiedCandidates.contains(selectedMapId)) {
-            return Optional.of(selectedMapId);
+
+        // Vanilla does not transmit map center coordinates to clients. Most
+        // client-side MapItemSavedData objects therefore contain placeholder 0,0
+        // centers. A future reliable observation may veto the captured position,
+        // but an ordinary placeholder must not reject a newly allocated id.
+        Optional<ObservedMap> reliableObservation = scanner.scanFilledMaps(client).stream()
+                .filter(observed -> observed.mapId() == openedMapId.get())
+                .filter(ObservedMap::regionReliable)
+                .findFirst();
+        if (reliableObservation.isPresent() && !matchesOpeningTarget(reliableObservation.get(), target)) {
+            return Optional.empty();
         }
-        if (verifiedCandidates.size() == 1) {
-            return Optional.of(verifiedCandidates.getFirst());
-        }
-        return Optional.empty();
+        return openedMapId;
     }
 
     private Optional<Integer> findRejectedOpening(Minecraft client, RouteStep target) {
-        Set<Integer> newMapIds = new HashSet<>(currentFilledMapIds(client));
-        newMapIds.removeAll(pendingOpening.knownMapIds());
-        if (newMapIds.isEmpty()) {
+        Optional<Integer> openedMapId = openedMapIdResolver.resolve(
+                pendingOpening.knownMapIds(),
+                currentFilledMapIds(client),
+                readPendingSlotMapId(client)
+        );
+        if (openedMapId.isEmpty()) {
             return Optional.empty();
         }
-
-        Integer selectedMapId = readPendingSlotMapId(client);
-        if (selectedMapId != null && newMapIds.contains(selectedMapId)) {
-            return scanner.scanFilledMaps(client).stream()
-                    .filter(observed -> observed.mapId() == selectedMapId)
-                    .filter(observed -> !matchesOpeningTarget(observed, target))
-                    .map(ObservedMap::mapId)
-                    .findFirst();
-        }
-        if (newMapIds.size() != 1) {
-            return Optional.empty();
-        }
-
-        int newMapId = newMapIds.iterator().next();
         return scanner.scanFilledMaps(client).stream()
-                .filter(observed -> observed.mapId() == newMapId)
+                .filter(observed -> observed.mapId() == openedMapId.get())
+                .filter(ObservedMap::regionReliable)
                 .filter(observed -> !matchesOpeningTarget(observed, target))
                 .map(ObservedMap::mapId)
                 .findFirst();
@@ -298,9 +303,7 @@ public final class MapOpenController {
         if (client.player == null || pendingOpening == null) {
             return null;
         }
-        ItemStack stack = pendingOpening.hand() == InteractionHand.OFF_HAND
-                ? client.player.getOffhandItem()
-                : client.player.getInventory().getNonEquipmentItems().get(pendingOpening.hotbarSlot());
+        ItemStack stack = MapOpeningSlots.stackAt(client.player, pendingOpening.expectedOutputSlot());
         if (!stack.is(Items.FILLED_MAP)) {
             return null;
         }
@@ -324,12 +327,11 @@ public final class MapOpenController {
     private record PendingOpening(
             String regionSignature,
             Set<Integer> knownMapIds,
-            InteractionHand hand,
-            int hotbarSlot,
+            int expectedOutputSlot,
             int ticksRemaining
     ) {
         PendingOpening tick() {
-            return new PendingOpening(regionSignature, knownMapIds, hand, hotbarSlot, ticksRemaining - 1);
+            return new PendingOpening(regionSignature, knownMapIds, expectedOutputSlot, ticksRemaining - 1);
         }
     }
 

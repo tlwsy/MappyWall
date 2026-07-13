@@ -1564,6 +1564,17 @@ public final class MovementController {
         }
 
         String signature = navigationSignature(target);
+        if (!signature.equals(targetSignature)) {
+            // Never execute a waypoint planned for the previous map region while
+            // the asynchronous planner is computing the new route.
+            path = List.of();
+            pathIndex = 0;
+            breakingBlock = null;
+            pendingPlacementBlock = null;
+            pendingPlacementTicks = 0;
+            activeStepSignature = null;
+            activeStepTicks = 0;
+        }
         if (pendingPlan != null && !pendingPlan.isDone()) {
             if (signature.equals(pendingPlanSignature)) {
                 return;

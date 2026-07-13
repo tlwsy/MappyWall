@@ -168,7 +168,7 @@ class MapWallPlannerTest {
                 RunMode.MANUAL
         );
         MapWallSave opened = planner.bindCurrentStep(
-                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.POSITION_CAPTURE
         );
 
         assertEquals(RouteStepState.OPENED, opened.route().getFirst().state());
@@ -189,29 +189,128 @@ class MapWallPlannerTest {
     }
 
     @Test
-    void targetCaptureAtScaleZeroWaitsForPositiveMapStateVerification() {
+    void positionValidatedTargetCaptureCompletesScaleZeroCell() {
         MapWallPlanner planner = new MapWallPlanner();
         MapWallProject project = planner.createProject(
                 "p1", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
         );
+        MapWallSave captured = planner.bindCurrentStep(
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.POSITION_CAPTURE
+        );
+
+        assertEquals(RouteStepState.BOUND, captured.route().getFirst().state());
+        assertEquals(ProjectStatus.COMPLETE, captured.project().status());
+    }
+
+    @Test
+    void legacyTargetCaptureAtScaleZeroRemainsProvisional() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-capture", "local", "minecraft:overworld", 0, 1, 1, 0, 0, RunMode.MANUAL
+        );
+
         MapWallSave captured = planner.bindCurrentStep(
                 planner.createSave(project), 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
         );
 
         assertEquals(RouteStepState.OPENED, captured.route().getFirst().state());
         assertEquals(ProjectStatus.RUNNING, captured.project().status());
+        assertEquals(captured.route().getFirst(), planner.nextOpenStep(captured));
+    }
 
-        MapBinding binding = captured.bindings().getFirst();
-        MapWallSave verified = planner.reconcileBindings(captured, List.of(new MapBinding(
-                binding.wallPos(),
-                binding.regionSignature(),
-                binding.mapId(),
-                binding.openedAt(),
-                BindingVerification.MAP_STATE
-        )));
+    @Test
+    void fillAfterOpenReopensLegacyScaleZeroCaptureBeforeFilling() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-fill-scale-zero",
+                "local",
+                "minecraft:overworld",
+                0,
+                1,
+                1,
+                0,
+                0,
+                RunMode.AUTO_WALK,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.FILL_AFTER_OPEN
+        );
+        MapWallSave captured = planner.bindCurrentStep(
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
+        );
 
-        assertEquals(RouteStepState.BOUND, verified.route().getFirst().state());
-        assertEquals(ProjectStatus.COMPLETE, verified.project().status());
+        assertNull(planner.nextFillStep(captured));
+        assertEquals(captured.route().getFirst(), planner.nextOpenStep(captured));
+    }
+
+    @Test
+    void migratesLegacyPlaceholderBasedBindingsBackToReopenableEvidence() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-placeholder", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.AUTO_WALK
+        );
+        MapWallSave initial = planner.createSave(project);
+        MapWallSave polluted = planner.reconcileBindings(initial, List.of(
+                new MapBinding(
+                        initial.route().get(0).wallPos(),
+                        initial.route().get(0).region().signature(),
+                        4,
+                        Instant.EPOCH,
+                        BindingVerification.MAP_STATE
+                ),
+                new MapBinding(
+                        initial.route().get(1).wallPos(),
+                        initial.route().get(1).region().signature(),
+                        9,
+                        Instant.EPOCH,
+                        BindingVerification.TARGET_SCALE
+                )
+        )).withSession(initial.session().withBindingDataVersion(0));
+
+        MapWallSave migrated = planner.migrateLegacyBindingData(polluted);
+
+        assertEquals(RunSessionState.CURRENT_BINDING_DATA_VERSION, migrated.session().bindingDataVersion());
+        assertTrue(migrated.bindings().stream()
+                .allMatch(binding -> binding.verifiedBy() == BindingVerification.TARGET_CAPTURE));
+        assertEquals(migrated.route().getFirst(), planner.nextOpenStep(migrated));
+        assertEquals(ProjectStatus.RUNNING, migrated.project().status());
+    }
+
+    @Test
+    void fillAfterOpenDemotesLegacyHighScaleCompletionWithoutTargetScaleMap() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "legacy-fill",
+                "local",
+                "minecraft:overworld",
+                2,
+                1,
+                1,
+                0,
+                0,
+                RunMode.AUTO_WALK,
+                WallAnchorMode.FIRST_REGION,
+                1,
+                1,
+                PostOpenMode.FILL_AFTER_OPEN
+        );
+        MapWallSave captured = planner.bindCurrentStep(
+                planner.createSave(project), 8, Instant.EPOCH, BindingVerification.TARGET_CAPTURE
+        );
+        RouteStep step = captured.route().getFirst();
+        MapWallSave legacyComplete = new MapWallSave(
+                captured.schemaVersion(),
+                captured.project().withStatus(ProjectStatus.COMPLETE),
+                List.of(step.withState(RouteStepState.BOUND)),
+                captured.bindings(),
+                captured.session()
+        );
+
+        MapWallSave normalized = planner.reconcileBindings(legacyComplete, legacyComplete.bindings());
+
+        assertEquals(RouteStepState.OPENED, normalized.route().getFirst().state());
+        assertEquals(ProjectStatus.RUNNING, normalized.project().status());
     }
 
     @Test
@@ -234,7 +333,9 @@ class MapWallPlannerTest {
         );
         MapWallSave save = planner.createSave(project);
 
-        MapWallSave afterOpen = planner.bindCurrentStep(save, 5, Instant.EPOCH, BindingVerification.TARGET_CAPTURE);
+        MapWallSave afterOpen = planner.bindCurrentStep(
+                save, 5, Instant.EPOCH, BindingVerification.POSITION_CAPTURE
+        );
 
         assertEquals(List.of(5), afterOpen.bindings().stream().map(MapBinding::mapId).toList());
         assertEquals(ProjectStatus.RUNNING, afterOpen.project().status());
@@ -350,6 +451,27 @@ class MapWallPlannerTest {
         assertEquals(RouteStepState.BOUND, reconciled.route().getFirst().state());
         assertEquals(ProjectStatus.COMPLETE, reconciled.project().status());
         assertEquals(4, reconciled.preferredBindingForRegion(step.region().signature()).orElseThrow().mapId());
+    }
+
+    @Test
+    void positionCapturedMapCanBeAddedAsAliasToAnAlreadyCompletedRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "manual-alias", "local", "minecraft:overworld", 0, 2, 1, 0, 0, RunMode.MANUAL
+        );
+        MapWallSave first = planner.bindCurrentStep(
+                planner.createSave(project), 4, Instant.EPOCH, BindingVerification.POSITION_CAPTURE
+        );
+        RouteStep completedRegion = first.route().getFirst();
+
+        MapWallSave aliased = planner.bindStep(
+                first, completedRegion, 5, Instant.EPOCH.plusSeconds(1), BindingVerification.POSITION_CAPTURE
+        );
+
+        assertEquals(List.of(4, 5), aliased.bindingsForRegion(completedRegion.region().signature()).stream()
+                .map(MapBinding::mapId)
+                .toList());
+        assertEquals(first.route().get(1), planner.nextOpenStep(aliased));
     }
 
     @Test

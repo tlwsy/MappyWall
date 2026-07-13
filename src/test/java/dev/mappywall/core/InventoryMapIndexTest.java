@@ -465,4 +465,41 @@ class InventoryMapIndexTest {
         assertFalse(result.hasWarnings());
         assertEquals(BindingVerification.MAP_STATE, result.bindings().getFirst().verifiedBy());
     }
+
+    @Test
+    void clientPlaceholderForNewMapDoesNotStealItIntoPreviousRegion() {
+        MapWallPlanner planner = new MapWallPlanner();
+        MapWallProject project = planner.createProject(
+                "placeholder-race", "local", "minecraft:overworld", 0, 4, 1, 0, 0, RunMode.AUTO_WALK
+        );
+        MapWallSave afterFirst = planner.bindCurrentStep(
+                planner.createSave(project), 10, Instant.EPOCH, BindingVerification.POSITION_CAPTURE
+        );
+        RouteStep first = afterFirst.route().getFirst();
+        RouteStep second = afterFirst.route().get(1);
+        RouteStep third = afterFirst.route().get(2);
+
+        ObservedMap clientPlaceholder = new ObservedMap(
+                11,
+                first.region().dimension(),
+                first.region().scale(),
+                first.region().centerX(),
+                first.region().centerZ(),
+                -1.0,
+                false
+        );
+        BindingRepairResult repair = new InventoryMapIndex().repairManualOpenings(
+                afterFirst,
+                List.of(clientPlaceholder),
+                Instant.EPOCH.plusSeconds(30)
+        );
+        MapWallSave reconciled = planner.reconcileBindings(afterFirst, repair.bindings());
+        MapWallSave afterSecond = planner.bindCurrentStep(
+                reconciled, 11, Instant.EPOCH.plusSeconds(31), BindingVerification.POSITION_CAPTURE
+        );
+
+        assertEquals(2, afterSecond.bindings().size());
+        assertEquals(second.region().signature(), afterSecond.bindingForMapId(11).orElseThrow().regionSignature());
+        assertEquals(third.region().signature(), planner.nextOpenStep(afterSecond).region().signature());
+    }
 }

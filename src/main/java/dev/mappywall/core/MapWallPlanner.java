@@ -198,11 +198,33 @@ public final class MapWallPlanner {
 
     public RouteStep nextOpenStep(MapWallSave save) {
         for (RouteStep step : save.route()) {
-            if (!hasBinding(save, step.region().signature())) {
+            boolean hasAnyBinding = hasBinding(save, step.region().signature());
+            if (!hasAnyBinding || !hasTrustedOpeningBinding(save, step.region().signature())) {
                 return step;
             }
         }
         return null;
+    }
+
+    public MapWallSave migrateLegacyBindingData(MapWallSave save) {
+        Objects.requireNonNull(save, "save");
+        if (save.session().bindingDataVersion() >= RunSessionState.CURRENT_BINDING_DATA_VERSION) {
+            return save;
+        }
+        List<MapBinding> provisional = save.bindings().stream()
+                .map(binding -> new MapBinding(
+                        binding.wallPos(),
+                        binding.regionSignature(),
+                        binding.mapId(),
+                        binding.openedAt(),
+                        BindingVerification.TARGET_CAPTURE
+                ))
+                .toList();
+        RunSessionState migratedSession = save.session()
+                .withPendingMapOpening(null)
+                .withPendingMapZoom(null)
+                .withBindingDataVersion(RunSessionState.CURRENT_BINDING_DATA_VERSION);
+        return reconcileBindings(save.withSession(migratedSession), provisional);
     }
 
     public MapWallSave bindCurrentStep(MapWallSave save, int mapId, Instant openedAt, BindingVerification verifiedBy) {
@@ -218,8 +240,36 @@ public final class MapWallPlanner {
                     : save;
         }
 
+        return bindStep(save, next, mapId, openedAt, verifiedBy);
+    }
+
+    public MapWallSave bindStep(
+            MapWallSave save,
+            RouteStep target,
+            int mapId,
+            Instant openedAt,
+            BindingVerification verifiedBy
+    ) {
+        Objects.requireNonNull(save, "save");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(openedAt, "openedAt");
+        Objects.requireNonNull(verifiedBy, "verifiedBy");
+        RouteStep canonicalTarget = save.route().stream()
+                .filter(step -> step.wallPos().equals(target.wallPos()))
+                .filter(step -> step.region().signature().equals(target.region().signature()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("target is outside the route"));
+        if (save.bindingForMapId(mapId).isPresent()) {
+            return save;
+        }
         List<MapBinding> bindings = new ArrayList<>(save.bindings());
-        bindings.add(new MapBinding(next.wallPos(), next.region().signature(), mapId, openedAt, verifiedBy));
+        bindings.add(new MapBinding(
+                canonicalTarget.wallPos(),
+                canonicalTarget.region().signature(),
+                mapId,
+                openedAt,
+                verifiedBy
+        ));
         return reconcileBindings(save, bindings);
     }
 
@@ -250,15 +300,12 @@ public final class MapWallPlanner {
             boolean bound = boundRegions.contains(step.region().signature());
             RouteStepState state = step.state();
             if (bound) {
+                boolean targetScaleReady = !normalized.finalBindingsForRegion(step.region().signature()).isEmpty();
                 if (save.project().postOpenMode() == PostOpenMode.FILL_AFTER_OPEN) {
-                    state = state == RouteStepState.BOUND ? RouteStepState.BOUND : RouteStepState.OPENED;
+                    state = state == RouteStepState.BOUND && targetScaleReady
+                            ? RouteStepState.BOUND
+                            : RouteStepState.OPENED;
                 } else {
-                    boolean targetScaleReady = normalized.bindingsForRegion(step.region().signature()).stream()
-                            .anyMatch(binding -> step.region().scale() == 0
-                                    ? binding.verifiedBy() == BindingVerification.MAP_STATE
-                                            || binding.verifiedBy() == BindingVerification.MANUAL_REPAIR
-                                            || binding.verifiedBy() == BindingVerification.TARGET_SCALE
-                                    : binding.verifiedBy() == BindingVerification.TARGET_SCALE);
                     state = targetScaleReady ? RouteStepState.BOUND : RouteStepState.OPENED;
                 }
             } else if (state == RouteStepState.OPENED || state == RouteStepState.BOUND) {
@@ -309,6 +356,11 @@ public final class MapWallPlanner {
                 // earliest missing cell; open the replacement first.
                 return null;
             }
+            if (!hasTrustedOpeningBinding(save, step.region().signature())) {
+                // Legacy client observations may have used placeholder centers.
+                // Reopen from a validated position before filling at any scale.
+                return null;
+            }
             if (step.state() == RouteStepState.OPENED && hasBinding(save, step.region().signature())) {
                 return step;
             }
@@ -356,6 +408,12 @@ public final class MapWallPlanner {
 
     public int fillWaypointCount(MapRegion region) {
         return fillTargets(region).size();
+    }
+
+    private boolean hasTrustedOpeningBinding(MapWallSave save, String regionSignature) {
+        return save.bindingsForRegion(regionSignature).stream()
+                .anyMatch(binding -> binding.verifiedBy() != BindingVerification.TARGET_CAPTURE
+                        && binding.verifiedBy() != BindingVerification.PENDING_VERIFICATION);
     }
 
     private boolean hasBinding(MapWallSave save, String regionSignature) {
