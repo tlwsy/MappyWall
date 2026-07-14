@@ -97,10 +97,10 @@ public final class NavigationSnapshotCapture {
                     maxZ,
                     bottomY,
                     topYInclusive,
-                    Map.copyOf(cells),
-                    Set.copyOf(loadedColumns),
+                    cells,
+                    loadedColumns,
                     surfaceAware,
-                    Map.copyOf(surfaceHeights)
+                    surfaceHeights
             );
         }
         return finishedSnapshot;

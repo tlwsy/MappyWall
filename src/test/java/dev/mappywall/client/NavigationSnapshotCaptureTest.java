@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mappywall.client.LocalPathPlanner.Cell;
 import dev.mappywall.client.LocalPathPlanner.NavigationSnapshot;
+import dev.mappywall.core.NavigationPlanningCadence;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,6 +36,30 @@ final class NavigationSnapshotCaptureTest {
 
         assertFalse(capture.advance(5));
         assertEquals(12, world.columnsRead());
+    }
+
+    @Test
+    void fullWindowCompletesInSevenCadenceBatches() {
+        CountingWorldView world = CountingWorldView.flat(64);
+        NavigationSnapshotCapture capture = new NavigationSnapshotCapture(
+                world,
+                new BlockPos(0, 65, 0)
+        );
+        int columnsPerBatch = NavigationPlanningCadence.defaults().snapshotColumnsPerTick();
+
+        for (int batch = 1; batch <= 6; batch++) {
+            int readsBeforeBatch = world.columnsRead();
+            assertFalse(capture.advance(columnsPerBatch), "batch " + batch);
+            assertEquals(columnsPerBatch, world.columnsRead() - readsBeforeBatch, "batch " + batch);
+        }
+
+        int readsBeforeFinalBatch = world.columnsRead();
+        assertTrue(capture.advance(columnsPerBatch));
+        assertEquals(177, world.columnsRead() - readsBeforeFinalBatch);
+        assertEquals(COLUMN_COUNT, world.columnsRead());
+
+        assertTrue(capture.advance(columnsPerBatch));
+        assertEquals(COLUMN_COUNT, world.columnsRead());
     }
 
     @Test
@@ -126,19 +151,25 @@ final class NavigationSnapshotCaptureTest {
     }
 
     @Test
-    void finishDoesNotReadWorldMetadataAfterCaptureCompletes() {
+    void finishDelegatesDefensiveFreezeAndCachesSnapshotWithoutWorldReads() {
         CountingWorldView world = CountingWorldView.flat(64);
         NavigationSnapshotCapture capture = new NavigationSnapshotCapture(
                 world,
                 new BlockPos(0, 65, 0)
         );
         assertTrue(capture.advance(COLUMN_COUNT));
+        int columnReadsAtCompletion = world.columnsRead();
         int metadataReadsAtCompletion = world.metadataReads();
 
         NavigationSnapshot first = capture.finish();
-        assertSame(first, capture.finish());
+        NavigationSnapshot second = capture.finish();
 
+        assertSame(first, second);
+        assertEquals(columnReadsAtCompletion, world.columnsRead());
         assertEquals(metadataReadsAtCompletion, world.metadataReads());
+        assertThrows(UnsupportedOperationException.class, () -> first.cells().clear());
+        assertThrows(UnsupportedOperationException.class, () -> first.loadedColumns().clear());
+        assertThrows(UnsupportedOperationException.class, () -> first.surfaceHeights().clear());
     }
 
     @Test
@@ -166,19 +197,40 @@ final class NavigationSnapshotCaptureTest {
     }
 
     @Test
-    void freezesDefensiveCopiesOfCapturedData() {
+    void navigationSnapshotCanonicalConstructorDefensivelyFreezesMutableInputs() {
         BlockPos floor = new BlockPos(0, 64, 0);
         Cell stone = new Cell(false, false, false, false, "minecraft:stone", true, true);
         Cell lava = new Cell(true, true, false, true, "minecraft:lava", true, false);
-        CountingWorldView world = CountingWorldView.flat(64).withCell(floor, stone);
-        NavigationSnapshotCapture capture = new NavigationSnapshotCapture(
-                world,
-                new BlockPos(0, 65, 0)
+        long floorColumn = columnKey(floor.getX(), floor.getZ());
+        Map<Long, Cell> cells = new HashMap<>();
+        Set<Long> loadedColumns = new HashSet<>();
+        Map<Long, Integer> surfaceHeights = new HashMap<>();
+        cells.put(floor.asLong(), stone);
+        loadedColumns.add(floorColumn);
+        surfaceHeights.put(floorColumn, 65);
+
+        NavigationSnapshot snapshot = new NavigationSnapshot(
+                new BlockPos(0, 65, 0),
+                -1,
+                1,
+                60,
+                70,
+                -1,
+                1,
+                -64,
+                319,
+                cells,
+                loadedColumns,
+                true,
+                surfaceHeights
         );
 
-        assertTrue(capture.advance(COLUMN_COUNT));
-        NavigationSnapshot snapshot = capture.finish();
-        world.withCell(floor, lava).withUnloadedColumn(0, 0).withSurfaceHeight(0, 0, 90);
+        cells.clear();
+        cells.put(floor.asLong(), lava);
+        loadedColumns.clear();
+        loadedColumns.add(columnKey(1, 1));
+        surfaceHeights.clear();
+        surfaceHeights.put(floorColumn, 90);
 
         assertEquals(stone, snapshot.cell(floor));
         assertTrue(snapshot.isColumnLoaded(0, 0));
@@ -188,22 +240,8 @@ final class NavigationSnapshotCaptureTest {
         assertThrows(UnsupportedOperationException.class, () -> snapshot.surfaceHeights().clear());
     }
 
-    @Test
-    void completedCapturePerformsNoExtraReadsAndReusesItsSnapshot() {
-        CountingWorldView world = CountingWorldView.flat(64);
-        NavigationSnapshotCapture capture = new NavigationSnapshotCapture(
-                world,
-                new BlockPos(0, 65, 0)
-        );
-
-        assertTrue(capture.advance(COLUMN_COUNT));
-        assertEquals(COLUMN_COUNT, world.columnsRead());
-        NavigationSnapshot first = capture.finish();
-
-        assertTrue(capture.advance(1));
-        assertTrue(capture.advance(100));
-        assertEquals(COLUMN_COUNT, world.columnsRead());
-        assertSame(first, capture.finish());
+    private static long columnKey(int x, int z) {
+        return ((long) x << 32) ^ (z & 0xffffffffL);
     }
 
     private record ColumnRead(int x, int z, int minY, int maxY) {
