@@ -4,10 +4,8 @@ import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.MapBounds;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -15,21 +13,20 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
 
 public final class LocalPathPlanner {
     private static final int MAX_NODES = 4500;
-    private static final int MAX_HORIZONTAL_RANGE = 28;
-    private static final int MAX_VERTICAL_RANGE = 8;
-    private static final int MAX_DROP = 3;
+    static final int MAX_HORIZONTAL_RANGE = 28;
+    static final int MAX_VERTICAL_RANGE = 8;
+    static final int MAX_DROP = 3;
     private static final int MAX_BREAK_BLOCKS = 9;
     private static final int MAX_PLACE_BLOCKS = 16;
+    private static final int SHALLOW_COVERED_DEPTH = 3;
+    private static final int NO_DROP_DEBT = Integer.MIN_VALUE;
     private static final double BREAK_COST = 140.0;
     private static final double PLACE_COST = 96.0;
+    private static final double COVERED_STEP_COST = 4.0;
     private static final Set<String> DANGEROUS_BLOCKS = Set.of(
             "minecraft:cactus",
             "minecraft:magma_block",
@@ -55,6 +52,19 @@ public final class LocalPathPlanner {
             {-1, -1}
     };
 
+    private final int maxNodes;
+
+    public LocalPathPlanner() {
+        this(MAX_NODES);
+    }
+
+    LocalPathPlanner(int maxNodes) {
+        if (maxNodes <= 0) {
+            throw new IllegalArgumentException("maxNodes must be positive");
+        }
+        this.maxNodes = maxNodes;
+    }
+
     public PathPlan plan(LocalPlayer player, RouteStep routeStep, AutoNavigationConfig config) {
         return plan(NavigationSnapshot.capture(player), routeStep, config);
     }
@@ -74,7 +84,7 @@ public final class LocalPathPlanner {
         );
         PathPlan safePlan = search(snapshot, routeStep, nonModifying);
         if (safePlan.reachedTarget()
-                || !safePlan.isEmpty()
+                || safePlan.isExecutable()
                 || (!config.blockBreakingEnabled() && !config.blockPlacingEnabled())) {
             return safePlan;
         }
@@ -85,45 +95,106 @@ public final class LocalPathPlanner {
 
     private PathPlan search(NavigationSnapshot snapshot, RouteStep routeStep, AutoNavigationConfig config) {
         BlockPos start = stableFeetPos(snapshot, snapshot.start());
-        BlockPos target = nearestRegionTarget(start, routeStep);
-        SearchNode startNode = new SearchNode(start, null, StepAction.WALK, null, 0, 0, 0.0, heuristic(start, target));
+        BlockPos target = nearestRegionTarget(snapshot, start, routeStep);
+        int startCoveredDepth = snapshot.coveredDepth(start);
+        boolean surfaceStart = !snapshot.surfaceAware() || snapshot.surfaceLike(start);
+        SearchNode startNode = new SearchNode(
+                start,
+                null,
+                StepAction.WALK,
+                null,
+                0,
+                0,
+                0.0,
+                heuristic(start, target),
+                coveredExposure(startCoveredDepth),
+                startCoveredDepth,
+                NO_DROP_DEBT
+        );
         PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingDouble(SearchNode::score));
         Map<SearchKey, Double> bestCost = new HashMap<>();
         open.add(startNode);
-        bestCost.put(new SearchKey(start, 0, 0), 0.0);
+        bestCost.put(new SearchKey(start, 0, 0, NO_DROP_DEBT), 0.0);
 
-        SearchNode best = startNode;
+        SearchNode bestSafe = null;
+        SearchNode bestUnloaded = null;
+        SearchNode bestDropFrontier = null;
         int visited = 0;
-        while (!open.isEmpty() && visited++ < MAX_NODES) {
+        while (!open.isEmpty() && visited < maxNodes) {
             if (Thread.currentThread().isInterrupted()) {
                 break;
             }
+            visited++;
             SearchNode current = open.poll();
-            if (current.heuristic < best.heuristic) {
-                best = current;
+            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)
+                    && betterPartial(snapshot, current, bestSafe, surfaceStart)) {
+                bestSafe = current;
             }
-            if (reached(current.pos, routeStep, target)) {
-                return new PathPlan(toSteps(current), current.pos, true);
+            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)
+                    && touchesUnloadedFrontier(snapshot, current.pos, target)
+                    && betterPartial(snapshot, current, bestUnloaded, surfaceStart)) {
+                bestUnloaded = current;
+            }
+            if (reached(snapshot, current.pos, routeStep, target)) {
+                return new PathPlan(start, toSteps(current), current.pos, PathOutcome.REACHED_TARGET);
+            }
+            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)) {
+                if (touchesUnloadedFrontier(snapshot, current.pos, target)) {
+                    return new PathPlan(
+                            start,
+                            toSteps(current),
+                            current.pos,
+                            PathOutcome.UNLOADED_FRONTIER
+                    );
+                }
+                if (touchesLocalSearchSeam(current.pos, start)) {
+                    return new PathPlan(start, toSteps(current), current.pos, PathOutcome.SAFE_FRONTIER);
+                }
             }
 
-            for (SearchNode next : neighbors(snapshot, current, start, target, config)) {
-                Double known = bestCost.get(new SearchKey(next.pos, next.breakCount, next.placeCount));
+            List<SearchNode> nextNodes = neighbors(snapshot, current, start, target, config);
+            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)
+                    && onlyTargetImprovingContinuationAddsDropDebt(current, nextNodes, target)
+                    && betterPartial(snapshot, current, bestDropFrontier, surfaceStart)) {
+                bestDropFrontier = current;
+            }
+            for (SearchNode next : nextNodes) {
+                SearchKey key = new SearchKey(next.pos, next.breakCount, next.placeCount, next.dropRecoveryY);
+                Double known = bestCost.get(key);
                 if (known != null && known <= next.cost) {
                     continue;
                 }
-                bestCost.put(new SearchKey(next.pos, next.breakCount, next.placeCount), next.cost);
+                bestCost.put(key, next.cost);
                 open.add(next);
+            }
+            if (!Thread.currentThread().isInterrupted()
+                    && !open.isEmpty()
+                    && visited < maxNodes
+                    && visited >= maxNodes - 1
+                    && bestDropFrontier != null) {
+                return new PathPlan(
+                        start,
+                        toSteps(bestDropFrontier),
+                        bestDropFrontier.pos,
+                        PathOutcome.SAFE_FRONTIER
+                );
             }
         }
 
-        List<PathStep> bestPath = toSteps(best);
-        if (bestPath.isEmpty()) {
-            Optional<PathStep> immediateBreak = immediateBreakStep(snapshot, start, target, config);
-            if (immediateBreak.isPresent()) {
-                return new PathPlan(List.of(immediateBreak.get()), start, false);
-            }
+        if (Thread.currentThread().isInterrupted() || (!open.isEmpty() && visited >= maxNodes)) {
+            return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT);
         }
-        return new PathPlan(bestPath, best.pos, false);
+        if (bestUnloaded != null) {
+            return new PathPlan(start, toSteps(bestUnloaded), bestUnloaded.pos, PathOutcome.UNLOADED_FRONTIER);
+        }
+        if (bestSafe != null) {
+            return new PathPlan(start, toSteps(bestSafe), bestSafe.pos, PathOutcome.SAFE_FRONTIER);
+        }
+        Optional<PathStep> immediateBreak = immediateBreakStep(snapshot, start, target, config);
+        if (immediateBreak.isPresent()) {
+            return new PathPlan(start, List.of(immediateBreak.get()), start, PathOutcome.SAFE_FRONTIER);
+        }
+        return new PathPlan(start, List.of(), start, PathOutcome.NO_PATH);
     }
 
     private List<PathStep> toSteps(SearchNode node) {
@@ -230,7 +301,8 @@ public final class LocalPathPlanner {
         }
         double cost = current.cost + extraCost + terrainCost(world, pos);
         StepAction plannedAction = swimming ? StepAction.SWIM : action;
-        result.add(new SearchNode(
+        result.add(nextNode(
+                world,
                 pos,
                 current,
                 plannedAction,
@@ -238,7 +310,7 @@ public final class LocalPathPlanner {
                 current.breakCount,
                 current.placeCount,
                 cost,
-                heuristic(pos, target)
+                target
         ));
     }
 
@@ -276,7 +348,8 @@ public final class LocalPathPlanner {
             return;
         }
         double cost = current.cost + BREAK_COST + diagonalCost(dx, dz) + heuristic(simulated, target) * 0.05;
-        result.add(new SearchNode(
+        result.add(nextNode(
+                world,
                 simulated,
                 current,
                 StepAction.BREAK,
@@ -284,7 +357,7 @@ public final class LocalPathPlanner {
                 current.breakCount + 1,
                 current.placeCount,
                 cost,
-                heuristic(simulated, target)
+                target
         ));
     }
 
@@ -311,7 +384,8 @@ public final class LocalPathPlanner {
             return;
         }
         double cost = current.cost + PLACE_COST + terrainCost(world, pos);
-        result.add(new SearchNode(
+        result.add(nextNode(
+                world,
                 pos,
                 current,
                 StepAction.PLACE,
@@ -319,8 +393,50 @@ public final class LocalPathPlanner {
                 current.breakCount,
                 current.placeCount + 1,
                 cost,
-                heuristic(pos, target)
+                target
         ));
+    }
+
+    private SearchNode nextNode(
+            NavigationSnapshot world,
+            BlockPos pos,
+            SearchNode current,
+            StepAction action,
+            BlockPos actionBlock,
+            int breakCount,
+            int placeCount,
+            double baseCost,
+            BlockPos target
+    ) {
+        int coveredDepth = world.coveredDepth(pos);
+        int exposure = coveredExposure(coveredDepth);
+        int dropRecoveryY = nextDropRecoveryY(current, pos, action);
+        return new SearchNode(
+                pos,
+                current,
+                action,
+                actionBlock,
+                breakCount,
+                placeCount,
+                baseCost + exposure * COVERED_STEP_COST,
+                heuristic(pos, target),
+                current.undergroundExposure + exposure,
+                Math.max(current.maxCoveredDepth, coveredDepth),
+                dropRecoveryY
+        );
+    }
+
+    private int nextDropRecoveryY(SearchNode current, BlockPos pos, StepAction action) {
+        int recoveryY = current.dropRecoveryY;
+        if (action == StepAction.DROP && current.pos.getY() - pos.getY() >= 2) {
+            recoveryY = recoveryY == NO_DROP_DEBT
+                    ? current.pos.getY()
+                    : Math.max(recoveryY, current.pos.getY());
+        }
+        if (recoveryY != NO_DROP_DEBT && pos.getY() >= recoveryY) {
+            return NO_DROP_DEBT;
+        }
+        return recoveryY;
     }
 
     private Optional<PathStep> immediateBreakStep(
@@ -535,18 +651,123 @@ public final class LocalPathPlanner {
         return feet;
     }
 
-    private boolean reached(BlockPos pos, RouteStep routeStep, BlockPos target) {
-        return Mth.floor(Math.sqrt(pos.distSqr(target))) <= REACHED_TARGET_RADIUS;
+    private boolean isSafePartialCandidate(
+            NavigationSnapshot world,
+            SearchNode candidate,
+            SearchNode start,
+            boolean surfaceStart,
+            int startCoveredDepth
+    ) {
+        if (candidate.parent == null || candidate.dropRecoveryY != NO_DROP_DEBT) {
+            return false;
+        }
+        if (surfaceStart) {
+            return world.surfaceLike(candidate.pos) && candidate.heuristic + 1.0e-6 < start.heuristic;
+        }
+        return world.coveredDepth(candidate.pos) < startCoveredDepth;
     }
 
-    private BlockPos nearestRegionTarget(BlockPos start, RouteStep routeStep) {
-        if (routeStep.state() == RouteStepState.OPENED) {
-            return new BlockPos(routeStep.targetBlock().x(), start.getY(), routeStep.targetBlock().z());
+    private boolean betterPartial(
+            NavigationSnapshot world,
+            SearchNode candidate,
+            SearchNode incumbent,
+            boolean surfaceStart
+    ) {
+        if (incumbent == null) {
+            return true;
         }
-        MapBounds bounds = routeStep.region().bounds();
-        int targetX = interiorCoordinate(start.getX(), bounds.minX(), bounds.maxX());
-        int targetZ = interiorCoordinate(start.getZ(), bounds.minZ(), bounds.maxZ());
-        return new BlockPos(targetX, start.getY(), targetZ);
+        if (surfaceStart) {
+            int risk = Integer.compare(candidate.maxCoveredDepth, incumbent.maxCoveredDepth);
+            if (risk != 0) {
+                return risk < 0;
+            }
+            int exposure = Integer.compare(candidate.undergroundExposure, incumbent.undergroundExposure);
+            if (exposure != 0) {
+                return exposure < 0;
+            }
+        } else {
+            int recovery = Integer.compare(
+                    world.coveredDepth(candidate.pos),
+                    world.coveredDepth(incumbent.pos)
+            );
+            if (recovery != 0) {
+                return recovery < 0;
+            }
+        }
+        int cost = Double.compare(candidate.cost, incumbent.cost);
+        if (cost != 0) {
+            return cost < 0;
+        }
+        return candidate.heuristic < incumbent.heuristic;
+    }
+
+    private boolean touchesUnloadedFrontier(NavigationSnapshot world, BlockPos pos, BlockPos target) {
+        double currentHeuristic = heuristic(pos, target);
+        for (int[] direction : DIRECTIONS) {
+            int x = pos.getX() + direction[0];
+            int z = pos.getZ() + direction[1];
+            if (!world.containsColumn(x, z) || world.isColumnLoaded(x, z)) {
+                continue;
+            }
+            BlockPos neighbor = new BlockPos(x, pos.getY(), z);
+            if (heuristic(neighbor, target) < currentHeuristic) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean touchesLocalSearchSeam(BlockPos pos, BlockPos start) {
+        return Math.abs(pos.getX() - start.getX()) == MAX_HORIZONTAL_RANGE
+                || Math.abs(pos.getZ() - start.getZ()) == MAX_HORIZONTAL_RANGE
+                || Math.abs(pos.getY() - start.getY()) == MAX_VERTICAL_RANGE;
+    }
+
+    private boolean onlyTargetImprovingContinuationAddsDropDebt(
+            SearchNode current,
+            List<SearchNode> continuations,
+            BlockPos target
+    ) {
+        double currentDistance = horizontalHeuristic(current.pos, target);
+        boolean foundImprovingContinuation = false;
+        for (SearchNode continuation : continuations) {
+            if (horizontalHeuristic(continuation.pos, target) + 1.0e-6 >= currentDistance) {
+                continue;
+            }
+            foundImprovingContinuation = true;
+            if (continuation.action != StepAction.DROP
+                    || current.pos.getY() - continuation.pos.getY() < 2
+                    || continuation.dropRecoveryY == NO_DROP_DEBT) {
+                return false;
+            }
+        }
+        return foundImprovingContinuation;
+    }
+
+    private int coveredExposure(int coveredDepth) {
+        return Math.max(0, coveredDepth - SHALLOW_COVERED_DEPTH);
+    }
+
+    private boolean reached(NavigationSnapshot world, BlockPos pos, RouteStep routeStep, BlockPos target) {
+        return Mth.floor(Math.sqrt(pos.distSqr(target))) <= REACHED_TARGET_RADIUS
+                && (!world.surfaceAware() || world.surfaceLike(pos));
+    }
+
+    private BlockPos nearestRegionTarget(NavigationSnapshot world, BlockPos start, RouteStep routeStep) {
+        int targetX;
+        int targetZ;
+        if (routeStep.state() == RouteStepState.OPENED) {
+            targetX = routeStep.targetBlock().x();
+            targetZ = routeStep.targetBlock().z();
+        } else {
+            MapBounds bounds = routeStep.region().bounds();
+            targetX = interiorCoordinate(start.getX(), bounds.minX(), bounds.maxX());
+            targetZ = interiorCoordinate(start.getZ(), bounds.minZ(), bounds.maxZ());
+        }
+        int targetY = world.hasSurfaceHeight(targetX, targetZ)
+                ? world.surfaceHeight(targetX, targetZ)
+                : start.getY();
+        return new BlockPos(targetX, targetY, targetZ);
     }
 
     private int interiorCoordinate(int current, int min, int max) {
@@ -557,10 +778,15 @@ public final class LocalPathPlanner {
     }
 
     private double heuristic(BlockPos pos, BlockPos target) {
+        double horizontal = horizontalHeuristic(pos, target);
+        int dy = Math.abs(pos.getY() - target.getY());
+        return horizontal + dy * 2.0;
+    }
+
+    private double horizontalHeuristic(BlockPos pos, BlockPos target) {
         double dx = (double) pos.getX() - target.getX();
         double dz = (double) pos.getZ() - target.getZ();
-        int dy = Math.abs(pos.getY() - target.getY());
-        return Math.sqrt(dx * dx + dz * dz) + dy * 2.0;
+        return Math.sqrt(dx * dx + dz * dz);
     }
 
     private double diagonalCost(int dx, int dz) {
@@ -575,20 +801,50 @@ public final class LocalPathPlanner {
             int breakCount,
             int placeCount,
             double cost,
-            double heuristic
+            double heuristic,
+            int undergroundExposure,
+            int maxCoveredDepth,
+            int dropRecoveryY
     ) {
         double score() {
             return cost + heuristic;
         }
     }
 
-    private record SearchKey(BlockPos pos, int breakCount, int placeCount) {
+    private record SearchKey(BlockPos pos, int breakCount, int placeCount, int dropRecoveryY) {
     }
 
-    public record PathPlan(List<PathStep> steps, BlockPos plannedEnd, boolean reachedTarget) {
+    public record PathPlan(
+            BlockPos plannedStart,
+            List<PathStep> steps,
+            BlockPos plannedEnd,
+            PathOutcome outcome
+    ) {
+        public PathPlan {
+            steps = List.copyOf(steps);
+        }
+
         boolean isEmpty() {
             return steps.isEmpty();
         }
+
+        boolean isExecutable() {
+            return outcome == PathOutcome.REACHED_TARGET
+                    || (!steps.isEmpty()
+                    && (outcome == PathOutcome.SAFE_FRONTIER || outcome == PathOutcome.UNLOADED_FRONTIER));
+        }
+
+        public boolean reachedTarget() {
+            return outcome == PathOutcome.REACHED_TARGET;
+        }
+    }
+
+    public enum PathOutcome {
+        REACHED_TARGET,
+        SAFE_FRONTIER,
+        UNLOADED_FRONTIER,
+        NODE_LIMIT,
+        NO_PATH
     }
 
     public record PathStep(BlockPos pos, StepAction action, BlockPos actionBlock) {
@@ -605,76 +861,27 @@ public final class LocalPathPlanner {
             int bottomY,
             int topYInclusive,
             Map<Long, Cell> cells,
-            Set<Long> loadedColumns
+            Set<Long> loadedColumns,
+            boolean surfaceAware,
+            Map<Long, Integer> surfaceHeights
     ) {
         private static final Cell DEFAULT_AIR = new Cell(true, true, false, false, "minecraft:air", true, false);
         private static final Cell OUT_OF_RANGE = new Cell(false, false, false, false, "minecraft:bedrock", false, false);
         private static final Cell UNLOADED = new Cell(false, false, false, false, "minecraft:void_air", false, false);
 
+        public NavigationSnapshot {
+            cells = Map.copyOf(cells);
+            loadedColumns = Set.copyOf(loadedColumns);
+            surfaceHeights = Map.copyOf(surfaceHeights);
+        }
+
         static NavigationSnapshot capture(LocalPlayer player) {
-            Level world = player.level();
-            BlockPos start = player.blockPosition();
-            int minX = start.getX() - MAX_HORIZONTAL_RANGE;
-            int maxX = start.getX() + MAX_HORIZONTAL_RANGE;
-            int minZ = start.getZ() - MAX_HORIZONTAL_RANGE;
-            int maxZ = start.getZ() + MAX_HORIZONTAL_RANGE;
-            int minY = Math.max(world.getMinY(), start.getY() - MAX_VERTICAL_RANGE - MAX_DROP - 2);
-            int maxY = Math.min(world.getMaxY() - 1, start.getY() + MAX_VERTICAL_RANGE + 2);
-            Map<Long, Cell> cells = new HashMap<>();
-            Set<Long> loadedColumns = new HashSet<>();
-            BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
-
-            for (int x = minX; x <= maxX; x++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    mutable.set(x, start.getY(), z);
-                    if (!world.hasChunkAt(mutable)) {
-                        continue;
-                    }
-                    loadedColumns.add(columnKey(x, z));
-                    for (int y = minY; y <= maxY; y++) {
-                        mutable.set(x, y, z);
-                        BlockState state = world.getBlockState(mutable);
-                        boolean water = world.getFluidState(mutable).is(FluidTags.WATER);
-                        boolean lava = world.getFluidState(mutable).is(FluidTags.LAVA);
-                        boolean passable = state.getCollisionShape(world, mutable).isEmpty();
-                        boolean replaceable = state.canBeReplaced();
-                        boolean breakable = !passable
-                                && !water
-                                && !lava
-                                && !state.hasBlockEntity()
-                                && state.getDestroySpeed(world, mutable) >= 0.0F;
-                        String blockId = state.isAir()
-                                ? "minecraft:air"
-                                : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                        if (state.isAir() && !water && !lava) {
-                            continue;
-                        }
-                        cells.put(mutable.asLong(), new Cell(
-                                passable,
-                                replaceable,
-                                water,
-                                lava,
-                                blockId,
-                                true,
-                                breakable
-                        ));
-                    }
-                }
-            }
-
-            return new NavigationSnapshot(
-                    start,
-                    minX,
-                    maxX,
-                    minY,
-                    maxY,
-                    minZ,
-                    maxZ,
-                    world.getMinY(),
-                    world.getMaxY() - 1,
-                    Collections.unmodifiableMap(cells),
-                    Collections.unmodifiableSet(loadedColumns)
+            NavigationSnapshotCapture capture = new NavigationSnapshotCapture(
+                    player.level(),
+                    player.blockPosition()
             );
+            capture.advance(Integer.MAX_VALUE);
+            return capture.finish();
         }
 
         Cell cell(BlockPos pos) {
@@ -696,6 +903,37 @@ public final class LocalPathPlanner {
             return cell(pos).loaded();
         }
 
+        boolean containsColumn(int x, int z) {
+            return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+        }
+
+        boolean isColumnLoaded(int x, int z) {
+            return containsColumn(x, z) && loadedColumns.contains(columnKey(x, z));
+        }
+
+        boolean hasSurfaceHeight(int x, int z) {
+            return surfaceAware && surfaceHeights.containsKey(columnKey(x, z));
+        }
+
+        int surfaceHeight(int x, int z) {
+            Integer height = surfaceHeights.get(columnKey(x, z));
+            if (height == null) {
+                throw new IllegalArgumentException("No surface height for column " + x + "," + z);
+            }
+            return height;
+        }
+
+        int coveredDepth(BlockPos pos) {
+            if (!hasSurfaceHeight(pos.getX(), pos.getZ())) {
+                return 0;
+            }
+            return Math.max(0, surfaceHeight(pos.getX(), pos.getZ()) - pos.getY());
+        }
+
+        boolean surfaceLike(BlockPos pos) {
+            return !surfaceAware || coveredDepth(pos) <= SHALLOW_COVERED_DEPTH;
+        }
+
         private static long columnKey(int x, int z) {
             return ((long) x << 32) ^ (z & 0xffffffffL);
         }
@@ -709,7 +947,7 @@ public final class LocalPathPlanner {
         }
     }
 
-    private record Cell(
+    record Cell(
             boolean passable,
             boolean replaceable,
             boolean water,

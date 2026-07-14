@@ -2,18 +2,19 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.MapWallSave;
+import dev.mappywall.core.PathSegmentCoordinator;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.RunMode;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.List;
-import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -90,6 +91,9 @@ public final class MovementController {
     private static final int BREAK_TIMEOUT_TICKS = 140;
     private static final int MAX_ACTION_FAILURES = 3;
     private static final double MAX_PLAN_START_DRIFT_SQR = 2.0;
+    private static final int LOOKAHEAD_REMAINING_STEPS = 14;
+    private static final int SNAPSHOT_COLUMNS_PER_TICK = 192;
+    private static final int LOOKAHEAD_VALIDATION_STEPS = 3;
     private static final int MAX_BREAK_ACTIONS_PER_TARGET = 9;
     private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
@@ -120,10 +124,11 @@ public final class MovementController {
     private final AutoNavigationConfig normalConfig = AutoNavigationConfig.defaults();
     private volatile AutoNavigationConfig aggressiveConfig;
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
+    private final PathSegmentCoordinator<LocalPathPlanner.PathStep> pathSegments =
+            new PathSegmentCoordinator<>();
     private final ArrayDeque<MovementSample> movementSamples = new ArrayDeque<>();
 
-    private List<LocalPathPlanner.PathStep> path = List.of();
-    private int pathIndex;
+    private long currentStepOrdinal;
     private int replanCooldown;
     private int stuckTicks;
     private int horizontalCollisionTicks;
@@ -141,11 +146,10 @@ public final class MovementController {
     private BlockPos breakingBlock;
     private String breakBudgetTargetSignature;
     private int breakActionsForTarget;
+    private NavigationSnapshotCapture pendingCapture;
     private Future<LocalPathPlanner.PathPlan> pendingPlan;
-    private String pendingPlanSignature;
-    private BlockPos pendingPlanStart;
+    private PlanningRequest pendingPlanningRequest;
     private long planGeneration;
-    private long pendingPlanGeneration;
     private AutomationStyle automationStyle = AutomationStyle.NORMAL;
     private boolean movementKeysHeld;
     private boolean directSprintHeld;
@@ -169,11 +173,11 @@ public final class MovementController {
     }
 
     MovementController(AutoNavigationConfig aggressiveConfig) {
-        this.aggressiveConfig = java.util.Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+        this.aggressiveConfig = Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
     }
 
     public void setAggressiveConfig(AutoNavigationConfig aggressiveConfig) {
-        this.aggressiveConfig = java.util.Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+        this.aggressiveConfig = Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
         forceLocalReplan();
     }
 
@@ -198,6 +202,7 @@ public final class MovementController {
         }
 
         LocalPlayer player = client.player;
+        handleNavigationTargetChange(target);
         if (arrivedAtNavigationTarget(player, target)) {
             if (player.isPassenger() && tryDismountVehicle(client, player)) {
                 return MovementResult.active(pathSnapshot());
@@ -215,13 +220,13 @@ public final class MovementController {
             return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_stuck"));
         }
 
+        advancePendingCapture();
+        acceptCompletedPlan(client, player, target);
+        startEligibleLookahead(client, target);
+        startInitialCaptureIfNeeded(client, target);
+
         if (tryEat(client, player)) {
             return MovementResult.active(pathSnapshot());
-        }
-
-        acceptCompletedPlan(player, target);
-        if (needsNewPath(target)) {
-            requestReplan(client, target);
         }
 
         LocalPathPlanner.PathStep waypoint = nextWaypoint(player);
@@ -304,6 +309,9 @@ public final class MovementController {
         waitingForChunk = false;
         movementSamples.clear();
         cancelPendingPlan();
+        pathSegments.clear();
+        currentStepOrdinal = 0;
+        replanCooldown = 0;
     }
 
     public void hardReset(Minecraft client) {
@@ -326,7 +334,7 @@ public final class MovementController {
     }
 
     public boolean isPlanningPath() {
-        return pendingPlan != null && !pendingPlan.isDone();
+        return pendingCapture != null || pendingPlan != null;
     }
 
     private AutoNavigationConfig navigationConfig() {
@@ -433,6 +441,123 @@ public final class MovementController {
         };
     }
 
+    private boolean isLookaheadContinuationSafe(
+            Minecraft client,
+            PathSegmentCoordinator.LookaheadRequest request,
+            LocalPathPlanner.PathPlan plan
+    ) {
+        if (client.level == null || request == null || plan.steps().stream().anyMatch(this::isModifyingStep)) {
+            return false;
+        }
+
+        BlockPos cursor = blockPos(request.seam());
+        if (!isLoadedSafePosition(client, cursor)) {
+            return false;
+        }
+        int validationCount = Math.min(LOOKAHEAD_VALIDATION_STEPS, plan.steps().size());
+        for (int index = 0; index < validationCount; index++) {
+            LocalPathPlanner.PathStep step = plan.steps().get(index);
+            if (!isLookaheadTransitionSafe(client, cursor, step)) {
+                return false;
+            }
+            cursor = step.pos();
+        }
+        return true;
+    }
+
+    private boolean isLookaheadTransitionSafe(
+            Minecraft client,
+            BlockPos from,
+            LocalPathPlanner.PathStep step
+    ) {
+        if (client.level == null || isModifyingStep(step)) {
+            return false;
+        }
+        BlockPos feet = step.pos();
+        BlockPos head = feet.above();
+        BlockPos support = feet.below();
+        if (!areLiveBlocksLoaded(client, feet, head, support)
+                || (step.actionBlock() != null && !client.level.hasChunkAt(step.actionBlock()))) {
+            return false;
+        }
+
+        int edgeX = feet.getX() - from.getX();
+        int edgeZ = feet.getZ() - from.getZ();
+        if (Math.max(Math.abs(edgeX), Math.abs(edgeZ)) != 1) {
+            return false;
+        }
+        if (edgeX != 0 && edgeZ != 0
+                && (!isLookaheadDiagonalSideSafe(client, from.offset(edgeX, 0, 0))
+                        || !isLookaheadDiagonalSideSafe(client, from.offset(0, 0, edgeZ)))) {
+            return false;
+        }
+        if (!isLoadedSafePosition(client, feet)) {
+            return false;
+        }
+
+        int verticalDelta = feet.getY() - from.getY();
+        boolean cardinal = Math.abs(edgeX) + Math.abs(edgeZ) == 1;
+        return switch (step.action()) {
+            case WALK -> verticalDelta == 0;
+            case JUMP -> cardinal
+                    && verticalDelta >= 0
+                    && verticalDelta <= 1
+                    && (verticalDelta == 0 || isLiveBodyClear(client, from.above()));
+            case DROP -> cardinal
+                    && verticalDelta >= -3
+                    && verticalDelta <= 0
+                    && isLiveDropShaftClear(client, from, feet);
+            case SWIM -> (verticalDelta == 0 || cardinal)
+                    && verticalDelta >= -3
+                    && verticalDelta <= 1
+                    && client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER);
+            case BREAK, PLACE -> false;
+        };
+    }
+
+    private boolean isLoadedSafePosition(Minecraft client, BlockPos feet) {
+        if (client.level == null
+                || !areLiveBlocksLoaded(client, feet, feet.above(), feet.below())
+                || !isLiveBodyClear(client, feet)
+                || isDangerousLiveBlock(client, feet)
+                || isDangerousLiveBlock(client, feet.above())
+                || isDangerousLiveBlock(client, feet.below())) {
+            return false;
+        }
+        if ((!client.level.getFluidState(feet).isEmpty()
+                        && !client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER))
+                || (!client.level.getFluidState(feet.above()).isEmpty()
+                        && !client.level.getFluidState(feet.above()).is(net.minecraft.tags.FluidTags.WATER))) {
+            return false;
+        }
+        return client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER)
+                || isSafeSolidSupport(client, feet.below());
+    }
+
+    private boolean isLookaheadDiagonalSideSafe(Minecraft client, BlockPos feet) {
+        return areLiveBlocksLoaded(client, feet, feet.above(), feet.below())
+                && isLiveDiagonalSideSafe(client, feet)
+                && !isDangerousLiveBlock(client, feet)
+                && !isDangerousLiveBlock(client, feet.above())
+                && !isDangerousLiveBlock(client, feet.below())
+                && (client.level.getFluidState(feet).isEmpty()
+                        || client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER))
+                && (client.level.getFluidState(feet.above()).isEmpty()
+                        || client.level.getFluidState(feet.above()).is(net.minecraft.tags.FluidTags.WATER));
+    }
+
+    private boolean areLiveBlocksLoaded(Minecraft client, BlockPos... positions) {
+        if (client.level == null) {
+            return false;
+        }
+        for (BlockPos position : positions) {
+            if (!client.level.hasChunkAt(position)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private boolean isLiveBodyClear(Minecraft client, BlockPos feet) {
         if (client.level == null || !client.level.hasChunkAt(feet)) {
             return false;
@@ -489,7 +614,7 @@ public final class MovementController {
     }
 
     private boolean trackStep(LocalPathPlanner.PathStep step) {
-        String signature = pathIndex + ":" + step.action() + ":" + step.pos().asLong()
+        String signature = currentStepOrdinal + ":" + step.action() + ":" + step.pos().asLong()
                 + ":" + (step.actionBlock() == null ? "-" : step.actionBlock().asLong());
         if (!signature.equals(activeStepSignature)) {
             activeStepSignature = signature;
@@ -511,14 +636,9 @@ public final class MovementController {
     }
 
     public List<BlockPos> pathSnapshot() {
-        if (path.isEmpty() || pathIndex >= path.size()) {
-            return List.of();
-        }
-        ArrayList<BlockPos> snapshot = new ArrayList<>();
-        for (int index = pathIndex; index < path.size(); index++) {
-            snapshot.add(path.get(index).pos());
-        }
-        return snapshot;
+        return pathSegments.remainingStepSnapshot().stream()
+                .map(LocalPathPlanner.PathStep::pos)
+                .toList();
     }
 
     private MovementResult executeStep(Minecraft client, LocalPlayer player, LocalPathPlanner.PathStep waypoint) {
@@ -1557,102 +1677,233 @@ public final class MovementController {
         return -1;
     }
 
-    private void requestReplan(Minecraft client, RouteStep target) {
-        if (client.player == null) {
-            path = List.of();
+    private void handleNavigationTargetChange(RouteStep target) {
+        String signature = navigationSignature(target);
+        if (signature.equals(targetSignature)) {
             return;
         }
 
-        String signature = navigationSignature(target);
-        if (!signature.equals(targetSignature)) {
-            // Never execute a waypoint planned for the previous map region while
-            // the asynchronous planner is computing the new route.
-            path = List.of();
-            pathIndex = 0;
-            breakingBlock = null;
-            pendingPlacementBlock = null;
-            pendingPlacementTicks = 0;
-            activeStepSignature = null;
-            activeStepTicks = 0;
-        }
-        if (pendingPlan != null && !pendingPlan.isDone()) {
-            if (signature.equals(pendingPlanSignature)) {
-                return;
-            }
-            pendingPlan.cancel(true);
-        }
-
-        LocalPathPlanner.NavigationSnapshot snapshot = LocalPathPlanner.NavigationSnapshot.capture(client.player);
-        AutoNavigationConfig planConfig = navigationConfig();
-        long generation = ++planGeneration;
-        pendingPlanSignature = signature;
-        pendingPlanStart = snapshot.start();
-        pendingPlanGeneration = generation;
-        pendingPlan = PATH_EXECUTOR.submit(() -> pathPlanner.plan(snapshot, target, planConfig));
-        replanCooldown = REPLAN_INTERVAL_TICKS;
+        cancelPendingPlan();
+        pathSegments.resetTarget(signature);
         targetSignature = signature;
+        currentStepOrdinal = 0;
+        replanCooldown = 0;
+        failedReplans = 0;
+        breakingBlock = null;
+        pendingPlacementBlock = null;
+        pendingPlacementTicks = 0;
+        activeStepSignature = null;
+        activeStepTicks = 0;
+        actionAcknowledged = false;
+        dropCommitted = false;
     }
 
-    private boolean needsNewPath(RouteStep target) {
+    private void advancePendingCapture() {
+        if (pendingCapture == null || pendingPlanningRequest == null) {
+            return;
+        }
+        if (!pendingCapture.advance(SNAPSHOT_COLUMNS_PER_TICK)) {
+            return;
+        }
+
+        LocalPathPlanner.NavigationSnapshot snapshot = pendingCapture.finish();
+        PlanningRequest request = pendingPlanningRequest;
+        pendingCapture = null;
+        pendingPlan = PATH_EXECUTOR.submit(
+                () -> pathPlanner.plan(snapshot, request.target(), request.config())
+        );
+    }
+
+    private void startEligibleLookahead(Minecraft client, RouteStep target) {
+        int remaining = pathSegments.remainingSteps();
+        if (client.level == null
+                || pendingPlanningRequest != null
+                || pendingCapture != null
+                || pendingPlan != null
+                || pathSegments.hasBuffered()
+                || remaining < 1
+                || remaining > LOOKAHEAD_REMAINING_STEPS) {
+            return;
+        }
+
+        boolean suffixStable = pathSegments.remainingStepSnapshot().stream()
+                .noneMatch(this::isModifyingStep);
+        pathSegments.beginLookahead(suffixStable).ifPresent(request -> {
+            BlockPos seam = blockPos(request.seam());
+            beginCapture(
+                    client,
+                    target,
+                    seam,
+                    PlanRequestKind.LOOKAHEAD,
+                    request
+            );
+        });
+    }
+
+    private void startInitialCaptureIfNeeded(Minecraft client, RouteStep target) {
         if (replanCooldown > 0) {
             replanCooldown--;
         }
-        if (!navigationSignature(target).equals(targetSignature)) {
-            return true;
-        }
-        if (pendingPlan != null && !pendingPlan.isDone()) {
-            return false;
-        }
-        return path.isEmpty() ? replanCooldown <= 0 : pathIndex >= path.size();
-    }
-
-    private void acceptCompletedPlan(LocalPlayer player, RouteStep target) {
-        if (pendingPlan == null || !pendingPlan.isDone()) {
+        if (client.player == null
+                || client.level == null
+                || pendingPlanningRequest != null
+                || pendingCapture != null
+                || pendingPlan != null
+                || pathSegments.remainingSteps() > 0
+                || pathSegments.hasBuffered()
+                || replanCooldown > 0) {
             return;
         }
 
+        beginCapture(
+                client,
+                target,
+                client.player.blockPosition(),
+                PlanRequestKind.INITIAL,
+                null
+        );
+        replanCooldown = REPLAN_INTERVAL_TICKS;
+    }
+
+    private void beginCapture(
+            Minecraft client,
+            RouteStep target,
+            BlockPos plannedStart,
+            PlanRequestKind kind,
+            PathSegmentCoordinator.LookaheadRequest lookaheadRequest
+    ) {
+        if (client.level == null) {
+            if (lookaheadRequest != null) {
+                pathSegments.failLookahead(lookaheadRequest);
+            }
+            return;
+        }
+
+        NavigationSnapshotCapture capture = new NavigationSnapshotCapture(client.level, plannedStart);
+        long generation = ++planGeneration;
+        pendingPlanningRequest = new PlanningRequest(
+                kind,
+                targetSignature,
+                generation,
+                target,
+                navigationConfig(),
+                plannedStart,
+                lookaheadRequest
+        );
+        pendingCapture = capture;
+    }
+
+    private void acceptCompletedPlan(Minecraft client, LocalPlayer player, RouteStep target) {
+        if (pendingPlan == null || !pendingPlan.isDone() || pendingPlanningRequest == null) {
+            return;
+        }
+
+        PlanningRequest request = pendingPlanningRequest;
         try {
             LocalPathPlanner.PathPlan plan = pendingPlan.get();
-            boolean currentRequest = pendingPlanGeneration == planGeneration;
-            boolean sameTarget = navigationSignature(target).equals(pendingPlanSignature);
-            boolean startStillCurrent = pendingPlanStart != null
-                    && pendingPlanStart.distSqr(player.blockPosition()) <= MAX_PLAN_START_DRIFT_SQR;
-            if (currentRequest && sameTarget && startStillCurrent) {
-                path = plan.steps();
-                pathIndex = 0;
-                replanCooldown = REPLAN_INTERVAL_TICKS;
-                targetSignature = pendingPlanSignature;
-                breakingBlock = null;
-                activeStepSignature = null;
-                activeStepTicks = 0;
-                failedReplans = path.isEmpty() ? failedReplans + 1 : 0;
+            boolean currentRequest = request.generation() == planGeneration;
+            boolean sameTarget = request.targetSignature().equals(targetSignature)
+                    && request.targetSignature().equals(navigationSignature(target));
+            boolean sameConfig = request.config().equals(navigationConfig());
+            if (!currentRequest || !sameTarget || !sameConfig) {
+                rejectPlanningRequest(request, false);
+            } else if (request.kind() == PlanRequestKind.INITIAL) {
+                acceptInitialPlan(player, request, plan);
             } else {
-                path = List.of();
-                pathIndex = 0;
-                replanCooldown = 0;
+                acceptLookaheadPlan(client, request, plan);
             }
         } catch (CancellationException exception) {
-            path = List.of();
-            pathIndex = 0;
-            replanCooldown = Math.max(replanCooldown, 20);
+            rejectPlanningRequest(request, request.kind() == PlanRequestKind.INITIAL);
         } catch (ExecutionException exception) {
-            path = List.of();
-            pathIndex = 0;
-            failedReplans++;
-            replanCooldown = Math.max(replanCooldown, 20);
+            rejectPlanningRequest(request, request.kind() == PlanRequestKind.INITIAL);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            replanCooldown = Math.max(replanCooldown, 20);
+            rejectPlanningRequest(request, request.kind() == PlanRequestKind.INITIAL);
         } finally {
             pendingPlan = null;
-            pendingPlanSignature = null;
-            pendingPlanStart = null;
+            pendingPlanningRequest = null;
         }
     }
 
+    private void acceptInitialPlan(
+            LocalPlayer player,
+            PlanningRequest request,
+            LocalPathPlanner.PathPlan plan
+    ) {
+        boolean startStillCurrent = request.plannedStart()
+                .distSqr(player.blockPosition()) <= MAX_PLAN_START_DRIFT_SQR;
+        if (!startStillCurrent || !plan.isExecutable()) {
+            rejectPlanningRequest(request, true);
+            return;
+        }
+
+        pathSegments.installInitial(toSegment(plan));
+        currentStepOrdinal = 0;
+        replanCooldown = REPLAN_INTERVAL_TICKS;
+        breakingBlock = null;
+        activeStepSignature = null;
+        activeStepTicks = 0;
+        failedReplans = 0;
+    }
+
+    private void acceptLookaheadPlan(
+            Minecraft client,
+            PlanningRequest request,
+            LocalPathPlanner.PathPlan plan
+    ) {
+        PathSegmentCoordinator.LookaheadRequest lookaheadRequest = request.lookaheadRequest();
+        boolean exactSeam = lookaheadRequest != null
+                && plan.plannedStart().equals(blockPos(lookaheadRequest.seam()));
+        if (!exactSeam
+                || !plan.isExecutable()
+                || !isLookaheadContinuationSafe(client, lookaheadRequest, plan)
+                || !pathSegments.acceptLookahead(lookaheadRequest, toSegment(plan))) {
+            rejectPlanningRequest(request, false);
+        }
+    }
+
+    private void rejectPlanningRequest(PlanningRequest request, boolean countInitialFailure) {
+        if (request.lookaheadRequest() != null) {
+            pathSegments.failLookahead(request.lookaheadRequest());
+        }
+        if (countInitialFailure) {
+            failedReplans++;
+            replanCooldown = Math.max(replanCooldown, 20);
+        }
+    }
+
+    private PathSegmentCoordinator.Segment<LocalPathPlanner.PathStep> toSegment(
+            LocalPathPlanner.PathPlan plan
+    ) {
+        boolean modifying = plan.steps().stream().anyMatch(this::isModifyingStep);
+        return new PathSegmentCoordinator.Segment<>(
+                anchor(plan.plannedStart()),
+                anchor(plan.plannedEnd()),
+                plan.steps(),
+                plan.outcome() == LocalPathPlanner.PathOutcome.REACHED_TARGET,
+                plan.outcome() == LocalPathPlanner.PathOutcome.SAFE_FRONTIER && !modifying
+        );
+    }
+
+    private boolean isModifyingStep(LocalPathPlanner.PathStep step) {
+        return step.action() == LocalPathPlanner.StepAction.BREAK
+                || step.action() == LocalPathPlanner.StepAction.PLACE;
+    }
+
+    private PathSegmentCoordinator.Anchor anchor(BlockPos pos) {
+        return new PathSegmentCoordinator.Anchor(pos.getX(), pos.getY(), pos.getZ());
+    }
+
+    private BlockPos blockPos(PathSegmentCoordinator.Anchor anchor) {
+        return new BlockPos(anchor.x(), anchor.y(), anchor.z());
+    }
+
     private LocalPathPlanner.PathStep nextWaypoint(LocalPlayer player) {
-        while (pathIndex < path.size()) {
-            LocalPathPlanner.PathStep step = path.get(pathIndex);
+        while (true) {
+            LocalPathPlanner.PathStep step = pathSegments.currentStepOrPromote().orElse(null);
+            if (step == null) {
+                return null;
+            }
             if (step.action() == LocalPathPlanner.StepAction.BREAK
                     || step.action() == LocalPathPlanner.StepAction.PLACE) {
                 return step;
@@ -1663,7 +1914,6 @@ public final class MovementController {
             }
             return step;
         }
-        return null;
     }
 
     private boolean isAtWaypoint(LocalPlayer player, LocalPathPlanner.PathStep step) {
@@ -1691,7 +1941,9 @@ public final class MovementController {
     }
 
     private void advancePathStep() {
-        pathIndex++;
+        if (pathSegments.advance()) {
+            currentStepOrdinal++;
+        }
         activeStepSignature = null;
         activeStepTicks = 0;
         actionFailures = 0;
@@ -1798,8 +2050,8 @@ public final class MovementController {
 
     private void forceLocalReplan() {
         cancelPendingPlan();
-        path = List.of();
-        pathIndex = 0;
+        pathSegments.clear();
+        currentStepOrdinal = 0;
         replanCooldown = 0;
         stuckTicks = 0;
         horizontalCollisionTicks = 0;
@@ -2356,8 +2608,9 @@ public final class MovementController {
     }
 
     private void resetProgress() {
-        path = List.of();
-        pathIndex = 0;
+        cancelPendingPlan();
+        pathSegments.clear();
+        currentStepOrdinal = 0;
         replanCooldown = 0;
         stuckTicks = 0;
         horizontalCollisionTicks = 0;
@@ -2385,7 +2638,6 @@ public final class MovementController {
         elytraStartCooldown = 0;
         fireworkCooldown = 0;
         dismountCooldown = 0;
-        cancelPendingPlan();
     }
 
     private void resetBreakBudgetIfTargetChanged(RouteStep target) {
@@ -2408,12 +2660,15 @@ public final class MovementController {
 
     private void cancelPendingPlan() {
         planGeneration++;
+        if (pendingPlanningRequest != null && pendingPlanningRequest.lookaheadRequest() != null) {
+            pathSegments.failLookahead(pendingPlanningRequest.lookaheadRequest());
+        }
+        pendingCapture = null;
         if (pendingPlan != null && !pendingPlan.isDone()) {
             pendingPlan.cancel(true);
         }
         pendingPlan = null;
-        pendingPlanSignature = null;
-        pendingPlanStart = null;
+        pendingPlanningRequest = null;
     }
 
     private String navigationSignature(RouteStep target) {
@@ -2446,6 +2701,34 @@ public final class MovementController {
 
     private int interiorMax(int min, int max) {
         return max - min + 1 <= REGION_ENTRY_INSET_BLOCKS * 2 ? max : max - REGION_ENTRY_INSET_BLOCKS;
+    }
+
+    private enum PlanRequestKind {
+        INITIAL,
+        LOOKAHEAD
+    }
+
+    private record PlanningRequest(
+            PlanRequestKind kind,
+            String targetSignature,
+            long generation,
+            RouteStep target,
+            AutoNavigationConfig config,
+            BlockPos plannedStart,
+            PathSegmentCoordinator.LookaheadRequest lookaheadRequest
+    ) {
+        private PlanningRequest {
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(targetSignature, "targetSignature");
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(config, "config");
+            Objects.requireNonNull(plannedStart, "plannedStart");
+            if (kind == PlanRequestKind.LOOKAHEAD) {
+                Objects.requireNonNull(lookaheadRequest, "lookaheadRequest");
+            } else if (lookaheadRequest != null) {
+                throw new IllegalArgumentException("Initial planning cannot carry a lookahead request");
+            }
+        }
     }
 
     private record DirectInput(
