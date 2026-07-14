@@ -8,6 +8,7 @@ import java.util.Objects;
 public final class NavigationPlanningRetryState {
     private final NavigationPlanningCadence cadence;
     private int remainingTicks;
+    private boolean invalidInitialPrefixSeen;
 
     public NavigationPlanningRetryState(NavigationPlanningCadence cadence) {
         this.cadence = Objects.requireNonNull(cadence, "cadence");
@@ -21,6 +22,7 @@ public final class NavigationPlanningRetryState {
 
     public void onSuccess() {
         remainingTicks = 0;
+        invalidInitialPrefixSeen = false;
     }
 
     public void onNoPath() {
@@ -47,8 +49,18 @@ public final class NavigationPlanningRetryState {
         remainingTicks = cadence.failedRetryTicks();
     }
 
+    public void onInvalidInitialPrefix() {
+        if (invalidInitialPrefixSeen) {
+            remainingTicks = cadence.failedRetryTicks();
+            return;
+        }
+        invalidInitialPrefixSeen = true;
+        remainingTicks = 0;
+    }
+
     public void forceFreshSnapshot() {
         remainingTicks = 0;
+        invalidInitialPrefixSeen = false;
     }
 
     public boolean canSubmit() {

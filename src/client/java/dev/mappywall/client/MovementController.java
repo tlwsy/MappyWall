@@ -126,6 +126,7 @@ public final class MovementController {
     private final AutoNavigationConfig normalConfig = AutoNavigationConfig.defaults();
     private volatile AutoNavigationConfig aggressiveConfig;
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
+    private final InitialPathPlanPreparer initialPathPlanPreparer = new InitialPathPlanPreparer();
     private final PathSegmentCoordinator<LocalPathPlanner.PathStep> pathSegments =
             new PathSegmentCoordinator<>();
     private final NavigationPlanningRetryState planningRetry =
@@ -239,7 +240,7 @@ public final class MovementController {
         startEligibleLookahead(client, target);
         startInitialCaptureIfNeeded(client, target);
         if (waypoint == null) {
-            stopMovement(client);
+            stopForPlanningGap(client, player);
             if (isUnloadedAhead(client, player, target)) {
                 waitingForChunk = true;
                 consecutiveNoPathFailures = 0;
@@ -388,7 +389,10 @@ public final class MovementController {
     }
 
     private boolean isAdjacentActionStep(LocalPlayer player, LocalPathPlanner.PathStep step) {
-        BlockPos current = player.blockPosition();
+        return isAdjacentActionStep(player.blockPosition(), step);
+    }
+
+    private boolean isAdjacentActionStep(BlockPos current, LocalPathPlanner.PathStep step) {
         return Math.abs(step.pos().getX() - current.getX()) <= 1
                 && Math.abs(step.pos().getZ() - current.getZ()) <= 1
                 && step.pos().getY() == current.getY();
@@ -491,6 +495,33 @@ public final class MovementController {
         int validationCount = Math.min(LOOKAHEAD_VALIDATION_STEPS, plan.steps().size());
         for (int index = 0; index < validationCount; index++) {
             LocalPathPlanner.PathStep step = plan.steps().get(index);
+            if (!isLookaheadTransitionSafe(client, cursor, step)) {
+                return false;
+            }
+            cursor = step.pos();
+        }
+        return true;
+    }
+
+    private boolean isInitialPathPrefixLiveSafe(
+            Minecraft client,
+            BlockPos actualFeet,
+            LocalPathPlanner.PathPlan plan
+    ) {
+        if (client.level == null || plan.steps().isEmpty()) {
+            return false;
+        }
+
+        BlockPos cursor = actualFeet;
+        int validationCount = Math.min(LOOKAHEAD_VALIDATION_STEPS, plan.steps().size());
+        for (int index = 0; index < validationCount; index++) {
+            LocalPathPlanner.PathStep step = plan.steps().get(index);
+            if (isModifyingStep(step)) {
+                return isAdjacentActionStep(cursor, step)
+                        && client.level.hasChunkAt(step.pos())
+                        && step.actionBlock() != null
+                        && client.level.hasChunkAt(step.actionBlock());
+            }
             if (!isLookaheadTransitionSafe(client, cursor, step)) {
                 return false;
             }
@@ -1848,7 +1879,7 @@ public final class MovementController {
             } else if (plan.outcome() == LocalPathPlanner.PathOutcome.NODE_LIMIT && plan.isEmpty()) {
                 rejectPlanningRequest(request, PlanningFailure.NODE_LIMIT);
             } else if (request.kind() == PlanRequestKind.INITIAL) {
-                acceptInitialPlan(player, request, plan);
+                acceptInitialPlan(client, player, request, plan);
             } else {
                 acceptLookaheadPlan(client, request, plan);
             }
@@ -1873,6 +1904,7 @@ public final class MovementController {
     }
 
     private void acceptInitialPlan(
+            Minecraft client,
             LocalPlayer player,
             PlanningRequest request,
             LocalPathPlanner.PathPlan plan
@@ -1888,7 +1920,16 @@ public final class MovementController {
             return;
         }
 
-        pathSegments.installInitial(toSegment(plan));
+        InitialPathPlanPreparer.PreparedInitialPath prepared = initialPathPlanPreparer
+                .prepare(player.blockPosition(), plan)
+                .orElse(null);
+        if (prepared == null
+                || !isInitialPathPrefixLiveSafe(client, player.blockPosition(), prepared.plan())) {
+            rejectPlanningRequest(request, PlanningFailure.INITIAL_PREFIX);
+            return;
+        }
+
+        pathSegments.installInitial(toSegment(prepared.plan()));
         currentStepOrdinal = 0;
         planningRetry.onSuccess();
         breakingBlock = null;
@@ -1931,6 +1972,7 @@ public final class MovementController {
             }
             case NODE_LIMIT -> planningRetry.onNodeLimit();
             case INVALID_PLAN -> planningRetry.onInvalidPlan();
+            case INITIAL_PREFIX -> planningRetry.onInvalidInitialPrefix();
         }
     }
 
@@ -2386,6 +2428,24 @@ public final class MovementController {
         releaseVehicleControls(client);
     }
 
+    private void stopForPlanningGap(Minecraft client, LocalPlayer player) {
+        stopMovement(client);
+        Vec3 currentVelocity = player.getDeltaMovement();
+        Vec3 safeVelocity = planningGapVelocity(currentAutomationStyle(), currentVelocity);
+        if (safeVelocity != currentVelocity) {
+            player.setDeltaMovement(safeVelocity);
+        }
+    }
+
+    static Vec3 planningGapVelocity(AutomationStyle style, Vec3 currentVelocity) {
+        Objects.requireNonNull(style, "style");
+        Objects.requireNonNull(currentVelocity, "currentVelocity");
+        if (style != AutomationStyle.AGGRESSIVE) {
+            return currentVelocity;
+        }
+        return new Vec3(0.0, currentVelocity.y, 0.0);
+    }
+
     private void applyAggressiveGroundVelocity(
             Minecraft client,
             LocalPlayer player,
@@ -2801,7 +2861,8 @@ public final class MovementController {
         LIVE_INVALIDATED,
         NO_PATH,
         NODE_LIMIT,
-        INVALID_PLAN
+        INVALID_PLAN,
+        INITIAL_PREFIX
     }
 
     private record PlanningRequest(

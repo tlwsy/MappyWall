@@ -74,6 +74,47 @@ class NavigationPlanningRetryStateTest {
     }
 
     @Test
+    void firstInvalidInitialPrefixRetriesImmediately() {
+        retry.onInvalidInitialPrefix();
+
+        assertEquals(0, retry.remainingTicks());
+        assertTrue(retry.canSubmit());
+    }
+
+    @Test
+    void repeatedInvalidInitialPrefixUsesFailureBackoff() {
+        retry.onInvalidInitialPrefix();
+        retry.onInvalidInitialPrefix();
+
+        assertEquals(20, retry.remainingTicks());
+        assertFalse(retry.canSubmit());
+    }
+
+    @Test
+    void successResetsInvalidInitialPrefixStreak() {
+        retry.onInvalidInitialPrefix();
+        retry.onInvalidInitialPrefix();
+        retry.onSuccess();
+
+        retry.onInvalidInitialPrefix();
+
+        assertEquals(0, retry.remainingTicks());
+        assertTrue(retry.canSubmit());
+    }
+
+    @Test
+    void freshSnapshotResetsInvalidInitialPrefixStreak() {
+        retry.onInvalidInitialPrefix();
+        retry.onInvalidInitialPrefix();
+        retry.forceFreshSnapshot();
+
+        retry.onInvalidInitialPrefix();
+
+        assertEquals(0, retry.remainingTicks());
+        assertTrue(retry.canSubmit());
+    }
+
+    @Test
     void staleResultForcesFreshSnapshotWithoutBackoff() {
         retry.onNoPath();
 
