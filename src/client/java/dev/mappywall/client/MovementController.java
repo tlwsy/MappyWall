@@ -2,6 +2,8 @@ package dev.mappywall.client;
 
 import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.MapWallSave;
+import dev.mappywall.core.NavigationPlanningCadence;
+import dev.mappywall.core.NavigationPlanningRetryState;
 import dev.mappywall.core.PathSegmentCoordinator;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
@@ -84,15 +86,12 @@ public final class MovementController {
     private static final int LOOP_STALL_TICKS = 100;
     private static final double LOCAL_STALL_AREA_BLOCKS = 1.0;
     private static final double LOOP_STALL_AREA_BLOCKS = 4.0;
-    private static final int REPLAN_INTERVAL_TICKS = 50;
     private static final int PLACE_COOLDOWN_NORMAL_TICKS = 4;
     private static final int PLACE_COOLDOWN_AGGRESSIVE_TICKS = 1;
     private static final int PLACE_CONFIRM_TIMEOUT_TICKS = 30;
     private static final int BREAK_TIMEOUT_TICKS = 140;
     private static final int MAX_ACTION_FAILURES = 3;
     private static final double MAX_PLAN_START_DRIFT_SQR = 2.0;
-    private static final int LOOKAHEAD_REMAINING_STEPS = 14;
-    private static final int SNAPSHOT_COLUMNS_PER_TICK = 192;
     private static final int LOOKAHEAD_VALIDATION_STEPS = 3;
     private static final int MAX_BREAK_ACTIONS_PER_TARGET = 9;
     private static final int BOAT_COOLDOWN_TICKS = 40;
@@ -115,6 +114,8 @@ public final class MovementController {
             "minecraft:sweet_berry_bush",
             "minecraft:wither_rose"
     );
+    private static final NavigationPlanningCadence PLANNING_CADENCE =
+            NavigationPlanningCadence.defaults();
     private static final ExecutorService PATH_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "MappyWall Path Planner");
         thread.setDaemon(true);
@@ -126,13 +127,14 @@ public final class MovementController {
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
     private final PathSegmentCoordinator<LocalPathPlanner.PathStep> pathSegments =
             new PathSegmentCoordinator<>();
+    private final NavigationPlanningRetryState planningRetry =
+            new NavigationPlanningRetryState(PLANNING_CADENCE);
     private final ArrayDeque<MovementSample> movementSamples = new ArrayDeque<>();
 
     private long currentStepOrdinal;
-    private int replanCooldown;
     private int stuckTicks;
     private int horizontalCollisionTicks;
-    private int failedReplans;
+    private int consecutiveNoPathFailures;
     private int placeCooldown;
     private int boatCooldown;
     private int eatCooldown;
@@ -178,6 +180,7 @@ public final class MovementController {
 
     public void setAggressiveConfig(AutoNavigationConfig aggressiveConfig) {
         this.aggressiveConfig = Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+        consecutiveNoPathFailures = 0;
         forceLocalReplan();
     }
 
@@ -203,6 +206,7 @@ public final class MovementController {
 
         LocalPlayer player = client.player;
         handleNavigationTargetChange(target);
+        planningRetry.beginTick();
         if (arrivedAtNavigationTarget(player, target)) {
             if (player.isPassenger() && tryDismountVehicle(client, player)) {
                 return MovementResult.active(pathSnapshot());
@@ -222,6 +226,7 @@ public final class MovementController {
 
         advancePendingCapture();
         acceptCompletedPlan(client, player, target);
+        pathSegments.promoteBuffered();
         startEligibleLookahead(client, target);
         startInitialCaptureIfNeeded(client, target);
 
@@ -230,14 +235,16 @@ public final class MovementController {
         }
 
         LocalPathPlanner.PathStep waypoint = nextWaypoint(player);
+        startEligibleLookahead(client, target);
+        startInitialCaptureIfNeeded(client, target);
         if (waypoint == null) {
             stopMovement(client);
             if (isUnloadedAhead(client, player, target)) {
                 waitingForChunk = true;
-                failedReplans = 0;
+                consecutiveNoPathFailures = 0;
                 return MovementResult.waiting(pathSnapshot());
             }
-            if (failedReplans >= MAX_ACTION_FAILURES) {
+            if (consecutiveNoPathFailures >= MAX_ACTION_FAILURES) {
                 release(client);
                 resetProgress();
                 return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_no_path"));
@@ -289,7 +296,7 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
 
-        failedReplans = 0;
+        consecutiveNoPathFailures = 0;
         MovementResult actionResult = executeStep(client, player, waypoint);
         updateProgress(player, target, waypoint);
         return actionResult;
@@ -311,7 +318,8 @@ public final class MovementController {
         cancelPendingPlan();
         pathSegments.clear();
         currentStepOrdinal = 0;
-        replanCooldown = 0;
+        planningRetry.forceFreshSnapshot();
+        consecutiveNoPathFailures = 0;
     }
 
     public void hardReset(Minecraft client) {
@@ -1687,8 +1695,8 @@ public final class MovementController {
         pathSegments.resetTarget(signature);
         targetSignature = signature;
         currentStepOrdinal = 0;
-        replanCooldown = 0;
-        failedReplans = 0;
+        planningRetry.forceFreshSnapshot();
+        consecutiveNoPathFailures = 0;
         breakingBlock = null;
         pendingPlacementBlock = null;
         pendingPlacementTicks = 0;
@@ -1702,7 +1710,7 @@ public final class MovementController {
         if (pendingCapture == null || pendingPlanningRequest == null) {
             return;
         }
-        if (!pendingCapture.advance(SNAPSHOT_COLUMNS_PER_TICK)) {
+        if (!pendingCapture.advance(PLANNING_CADENCE.snapshotColumnsPerTick())) {
             return;
         }
 
@@ -1721,8 +1729,9 @@ public final class MovementController {
                 || pendingCapture != null
                 || pendingPlan != null
                 || pathSegments.hasBuffered()
+                || !planningRetry.canSubmit()
                 || remaining < 1
-                || remaining > LOOKAHEAD_REMAINING_STEPS) {
+                || remaining > PLANNING_CADENCE.lookaheadRemainingSteps()) {
             return;
         }
 
@@ -1741,9 +1750,6 @@ public final class MovementController {
     }
 
     private void startInitialCaptureIfNeeded(Minecraft client, RouteStep target) {
-        if (replanCooldown > 0) {
-            replanCooldown--;
-        }
         if (client.player == null
                 || client.level == null
                 || pendingPlanningRequest != null
@@ -1751,7 +1757,7 @@ public final class MovementController {
                 || pendingPlan != null
                 || pathSegments.remainingSteps() > 0
                 || pathSegments.hasBuffered()
-                || replanCooldown > 0) {
+                || !planningRetry.canSubmit()) {
             return;
         }
 
@@ -1762,7 +1768,6 @@ public final class MovementController {
                 PlanRequestKind.INITIAL,
                 null
         );
-        replanCooldown = REPLAN_INTERVAL_TICKS;
     }
 
     private void beginCapture(
@@ -1799,30 +1804,38 @@ public final class MovementController {
         }
 
         PlanningRequest request = pendingPlanningRequest;
+        boolean requestCurrent = isCurrentPlanningRequest(request, target);
         try {
             LocalPathPlanner.PathPlan plan = pendingPlan.get();
-            boolean currentRequest = request.generation() == planGeneration;
-            boolean sameTarget = request.targetSignature().equals(targetSignature)
-                    && request.targetSignature().equals(navigationSignature(target));
-            boolean sameConfig = request.config().equals(navigationConfig());
-            if (!currentRequest || !sameTarget || !sameConfig) {
-                rejectPlanningRequest(request, false);
+            if (!requestCurrent) {
+                rejectPlanningRequest(request, PlanningFailure.STALE);
+            } else if (plan.outcome() == LocalPathPlanner.PathOutcome.NO_PATH) {
+                rejectPlanningRequest(request, PlanningFailure.NO_PATH);
+            } else if (plan.outcome() == LocalPathPlanner.PathOutcome.NODE_LIMIT && plan.isEmpty()) {
+                rejectPlanningRequest(request, PlanningFailure.NODE_LIMIT);
             } else if (request.kind() == PlanRequestKind.INITIAL) {
                 acceptInitialPlan(player, request, plan);
             } else {
                 acceptLookaheadPlan(client, request, plan);
             }
         } catch (CancellationException exception) {
-            rejectPlanningRequest(request, request.kind() == PlanRequestKind.INITIAL);
+            rejectPlanningCompletionException(request, requestCurrent);
         } catch (ExecutionException exception) {
-            rejectPlanningRequest(request, request.kind() == PlanRequestKind.INITIAL);
+            rejectPlanningCompletionException(request, requestCurrent);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            rejectPlanningRequest(request, request.kind() == PlanRequestKind.INITIAL);
+            rejectPlanningCompletionException(request, requestCurrent);
         } finally {
             pendingPlan = null;
             pendingPlanningRequest = null;
         }
+    }
+
+    private boolean isCurrentPlanningRequest(PlanningRequest request, RouteStep target) {
+        return request.generation() == planGeneration
+                && request.targetSignature().equals(targetSignature)
+                && request.targetSignature().equals(navigationSignature(target))
+                && request.config().equals(navigationConfig());
     }
 
     private void acceptInitialPlan(
@@ -1832,18 +1845,22 @@ public final class MovementController {
     ) {
         boolean startStillCurrent = request.plannedStart()
                 .distSqr(player.blockPosition()) <= MAX_PLAN_START_DRIFT_SQR;
-        if (!startStillCurrent || !plan.isExecutable()) {
-            rejectPlanningRequest(request, true);
+        if (!startStillCurrent) {
+            rejectPlanningRequest(request, PlanningFailure.LIVE_INVALIDATED);
+            return;
+        }
+        if (!plan.isExecutable()) {
+            rejectPlanningRequest(request, PlanningFailure.INVALID_PLAN);
             return;
         }
 
         pathSegments.installInitial(toSegment(plan));
         currentStepOrdinal = 0;
-        replanCooldown = REPLAN_INTERVAL_TICKS;
+        planningRetry.onSuccess();
         breakingBlock = null;
         activeStepSignature = null;
         activeStepTicks = 0;
-        failedReplans = 0;
+        consecutiveNoPathFailures = 0;
     }
 
     private void acceptLookaheadPlan(
@@ -1854,21 +1871,43 @@ public final class MovementController {
         PathSegmentCoordinator.LookaheadRequest lookaheadRequest = request.lookaheadRequest();
         boolean exactSeam = lookaheadRequest != null
                 && plan.plannedStart().equals(blockPos(lookaheadRequest.seam()));
-        if (!exactSeam
-                || !plan.isExecutable()
-                || !isLookaheadContinuationSafe(client, lookaheadRequest, plan)
-                || !pathSegments.acceptLookahead(lookaheadRequest, toSegment(plan))) {
-            rejectPlanningRequest(request, false);
+        if (!exactSeam || !plan.isExecutable()) {
+            rejectPlanningRequest(request, PlanningFailure.INVALID_PLAN);
+            return;
+        }
+        if (!isLookaheadContinuationSafe(client, lookaheadRequest, plan)) {
+            rejectPlanningRequest(request, PlanningFailure.LIVE_INVALIDATED);
+            return;
+        }
+        if (!pathSegments.acceptLookahead(lookaheadRequest, toSegment(plan))) {
+            rejectPlanningRequest(request, PlanningFailure.STALE);
+            return;
+        }
+        planningRetry.onSuccess();
+        consecutiveNoPathFailures = 0;
+    }
+
+    private void rejectPlanningRequest(PlanningRequest request, PlanningFailure failure) {
+        failPendingLookahead(request);
+        switch (failure) {
+            case STALE, LIVE_INVALIDATED -> planningRetry.forceFreshSnapshot();
+            case NO_PATH -> {
+                consecutiveNoPathFailures++;
+                planningRetry.onNoPath();
+            }
+            case NODE_LIMIT -> planningRetry.onNodeLimit();
+            case INVALID_PLAN -> planningRetry.onInvalidPlan();
         }
     }
 
-    private void rejectPlanningRequest(PlanningRequest request, boolean countInitialFailure) {
+    private void rejectPlanningCompletionException(PlanningRequest request, boolean requestCurrent) {
+        failPendingLookahead(request);
+        planningRetry.onCompletionException(requestCurrent);
+    }
+
+    private void failPendingLookahead(PlanningRequest request) {
         if (request.lookaheadRequest() != null) {
             pathSegments.failLookahead(request.lookaheadRequest());
-        }
-        if (countInitialFailure) {
-            failedReplans++;
-            replanCooldown = Math.max(replanCooldown, 20);
         }
     }
 
@@ -2052,7 +2091,8 @@ public final class MovementController {
         cancelPendingPlan();
         pathSegments.clear();
         currentStepOrdinal = 0;
-        replanCooldown = 0;
+        planningRetry.forceFreshSnapshot();
+        consecutiveNoPathFailures = 0;
         stuckTicks = 0;
         horizontalCollisionTicks = 0;
         breakingBlock = null;
@@ -2611,10 +2651,10 @@ public final class MovementController {
         cancelPendingPlan();
         pathSegments.clear();
         currentStepOrdinal = 0;
-        replanCooldown = 0;
+        planningRetry.forceFreshSnapshot();
+        consecutiveNoPathFailures = 0;
         stuckTicks = 0;
         horizontalCollisionTicks = 0;
-        failedReplans = 0;
         lastDistance = Double.MAX_VALUE;
         lastWaypointDistance = Double.MAX_VALUE;
         lastPlayerPos = Vec3.ZERO;
@@ -2706,6 +2746,14 @@ public final class MovementController {
     private enum PlanRequestKind {
         INITIAL,
         LOOKAHEAD
+    }
+
+    private enum PlanningFailure {
+        STALE,
+        LIVE_INVALIDATED,
+        NO_PATH,
+        NODE_LIMIT,
+        INVALID_PLAN
     }
 
     private record PlanningRequest(
