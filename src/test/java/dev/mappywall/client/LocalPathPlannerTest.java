@@ -106,6 +106,25 @@ class LocalPathPlannerTest {
     }
 
     @Test
+    void nodeLimitDoesNotTriggerModificationSearch() {
+        LocalPathPlanner budgetedPlanner = new LocalPathPlanner(1);
+        TestTerrain terrain = new TestTerrain().flatSurface(64);
+        terrain.solid(1, 65, 0);
+
+        PathPlan plan = budgetedPlanner.plan(
+                terrain.snapshot(new BlockPos(0, 65, 0)),
+                routeTo(80, 0),
+                AutoNavigationConfig.aggressiveDefaults()
+        );
+
+        assertEquals(PathOutcome.NODE_LIMIT, plan.outcome());
+        assertTrue(plan.steps().isEmpty());
+        assertTrue(plan.steps().stream().noneMatch(step ->
+                step.action() == StepAction.BREAK || step.action() == StepAction.PLACE));
+        assertEquals(1, plan.expandedNodes());
+    }
+
+    @Test
     void nodeBudgetReturnsBestSafeProgress() {
         LocalPathPlanner budgetedPlanner = new LocalPathPlanner(4);
         TestTerrain terrain = new TestTerrain().flatSurface(64);
@@ -122,11 +141,10 @@ class LocalPathPlannerTest {
     }
 
     @Test
-    void stopsAtSafeCliffEdgeBeforeExhaustingNodeBudget() {
-        LocalPathPlanner budgetedPlanner = new LocalPathPlanner(128);
+    void cliffFrontierUsesBoundedProofBudget() {
         TestTerrain terrain = TestTerrain.threeBlockDropTowardTargetWithNoReturn();
 
-        PathPlan plan = budgetedPlanner.plan(
+        PathPlan plan = planner.plan(
                 terrain.snapshot(new BlockPos(0, 65, 0)),
                 routeTo(80, 0),
                 config()
@@ -134,7 +152,47 @@ class LocalPathPlannerTest {
 
         assertEquals(PathOutcome.SAFE_FRONTIER, plan.outcome());
         assertEquals(new BlockPos(4, 65, 0), plan.plannedEnd());
-        assertTrue(plan.steps().stream().noneMatch(step -> step.action() == StepAction.DROP));
+        assertFalse(containsMultiBlockDrop(plan));
+        assertTrue(plan.expandedNodes() > 0);
+        assertTrue(
+                plan.expandedNodes() < 1_000,
+                () -> "expandedNodes=" + plan.expandedNodes()
+        );
+    }
+
+    @Test
+    void safeDetourBeatsNearbyCliffFrontierWithinProofBudget() {
+        TestTerrain terrain = TestTerrain.finiteThreeBlockTrench();
+
+        PathPlan plan = planner.plan(
+                terrain.snapshot(new BlockPos(0, 65, 0)),
+                routeTo(80, 0),
+                config()
+        );
+
+        assertEquals(PathOutcome.SAFE_FRONTIER, plan.outcome());
+        assertTrue(plan.plannedEnd().getX() > 5);
+        assertFalse(containsMultiBlockDrop(plan));
+    }
+
+    @Test
+    void unsafeDebtFreeDeadEndDoesNotCancelCliffProof() {
+        TestTerrain terrain = TestTerrain.threeBlockDropWithUnsafeOneBlockDeadEnd();
+        assertEquals(4, terrain.coveredDepth(new BlockPos(7, 64, 1)));
+
+        PathPlan plan = planner.plan(
+                terrain.snapshot(new BlockPos(0, 65, 0)),
+                routeTo(80, 0),
+                config()
+        );
+
+        assertEquals(PathOutcome.SAFE_FRONTIER, plan.outcome());
+        assertEquals(new BlockPos(4, 65, 0), plan.plannedEnd());
+        assertFalse(containsMultiBlockDrop(plan));
+        assertTrue(
+                plan.expandedNodes() < 1_000,
+                () -> "expandedNodes=" + plan.expandedNodes()
+        );
     }
 
     @Test
@@ -170,7 +228,7 @@ class LocalPathPlannerTest {
     }
 
     @Test
-    void debtFreeDescentStateSurvivesCheaperThreeBlockDropToSamePosition() {
+    void dropDebtDominanceKeepsRecoveredRoute() {
         BlockPos start = new BlockPos(0, 65, 0);
         TestTerrain terrain = new TestTerrain().isolatedSurface(
                 start,
@@ -197,6 +255,20 @@ class LocalPathPlannerTest {
 
         assertEquals(PathOutcome.UNLOADED_FRONTIER, plan.outcome());
         assertEquals(new BlockPos(8, 62, 0), plan.plannedEnd());
+        assertFalse(containsMultiBlockDrop(plan));
+    }
+
+    @Test
+    void dropDebtCannotSatisfyReachedTarget() {
+        TestTerrain terrain = TestTerrain.threeBlockDropTowardTargetWithNoReturn();
+
+        PathPlan plan = planner.plan(
+                terrain.snapshot(new BlockPos(0, 65, 0)),
+                routeTo(8, 0),
+                config()
+        );
+
+        assertNotEquals(PathOutcome.REACHED_TARGET, plan.outcome());
         assertFalse(containsMultiBlockDrop(plan));
     }
 
@@ -262,6 +334,27 @@ class LocalPathPlannerTest {
                     terrain.solid(x, 61, z);
                     terrain.surfaceHeights.put(columnKey(x, z), 62);
                 }
+            }
+            return terrain;
+        }
+
+        static TestTerrain finiteThreeBlockTrench() {
+            TestTerrain terrain = new TestTerrain().flatSurface(64);
+            for (int x = 5; x <= 9; x++) {
+                for (int z = -1; z <= 1; z++) {
+                    terrain.clear(x, 64, z);
+                    terrain.solid(x, 61, z);
+                    terrain.surfaceHeights.put(columnKey(x, z), 62);
+                }
+            }
+            return terrain;
+        }
+
+        static TestTerrain threeBlockDropWithUnsafeOneBlockDeadEnd() {
+            TestTerrain terrain = threeBlockDropTowardTargetWithNoReturn();
+            for (int x = 5; x <= 7; x++) {
+                terrain.solid(x, 63, 1);
+                terrain.surfaceHeights.put(columnKey(x, 1), 68);
             }
             return terrain;
         }

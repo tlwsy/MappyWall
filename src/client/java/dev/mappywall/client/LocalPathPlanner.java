@@ -26,7 +26,9 @@ public final class LocalPathPlanner {
     private static final int NO_DROP_DEBT = Integer.MIN_VALUE;
     private static final double BREAK_COST = 140.0;
     private static final double PLACE_COST = 96.0;
+    private static final double DROP_DEBT_COST = 64.0;
     private static final double COVERED_STEP_COST = 4.0;
+    private static final int CLIFF_PROOF_NODE_BUDGET = 384;
     private static final Set<String> DANGEROUS_BLOCKS = Set.of(
             "minecraft:cactus",
             "minecraft:magma_block",
@@ -83,14 +85,20 @@ public final class LocalPathPlanner {
                 config.eatAtFoodLevel()
         );
         PathPlan safePlan = search(snapshot, routeStep, nonModifying);
-        if (safePlan.reachedTarget()
-                || safePlan.isExecutable()
+        if (safePlan.outcome() != PathOutcome.NO_PATH
                 || (!config.blockBreakingEnabled() && !config.blockPlacingEnabled())) {
             return safePlan;
         }
         // Only consider modifying the world once an exhaustive local search cannot
         // make even one step of progress without doing so.
-        return search(snapshot, routeStep, config);
+        PathPlan modifyingPlan = search(snapshot, routeStep, config);
+        return new PathPlan(
+                modifyingPlan.plannedStart(),
+                modifyingPlan.steps(),
+                modifyingPlan.plannedEnd(),
+                modifyingPlan.outcome(),
+                safePlan.expandedNodes() + modifyingPlan.expandedNodes()
+        );
     }
 
     private PathPlan search(NavigationSnapshot snapshot, RouteStep routeStep, AutoNavigationConfig config) {
@@ -111,92 +119,222 @@ public final class LocalPathPlanner {
                 startCoveredDepth,
                 NO_DROP_DEBT
         );
-        PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingDouble(SearchNode::score));
-        Map<SearchKey, Double> bestCost = new HashMap<>();
+        PriorityQueue<SearchNode> open = new PriorityQueue<>(searchOrder());
+        Map<BaseSearchKey, List<DebtState>> paretoStates = new HashMap<>();
         open.add(startNode);
-        bestCost.put(new SearchKey(start, 0, 0, NO_DROP_DEBT), 0.0);
+        registerParetoState(paretoStates, startNode);
 
         SearchNode bestSafe = null;
         SearchNode bestUnloaded = null;
-        SearchNode bestDropFrontier = null;
-        int visited = 0;
-        while (!open.isEmpty() && visited < maxNodes) {
+        SearchNode cliffCandidate = null;
+        int cliffProofExpansions = 0;
+        boolean cliffProofResolved = false;
+        int expandedNodes = 0;
+        while (!open.isEmpty() && expandedNodes < maxNodes) {
             if (Thread.currentThread().isInterrupted()) {
                 break;
             }
-            visited++;
             SearchNode current = open.poll();
-            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)
+            if (!isCurrentParetoState(paretoStates, current)) {
+                continue;
+            }
+            expandedNodes++;
+            boolean safeCandidate = isSafePartialCandidate(
+                    snapshot,
+                    current,
+                    startNode,
+                    surfaceStart,
+                    startCoveredDepth
+            );
+            if (safeCandidate
                     && betterPartial(snapshot, current, bestSafe, surfaceStart)) {
                 bestSafe = current;
             }
-            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)
+            if (safeCandidate
                     && touchesUnloadedFrontier(snapshot, current.pos, target)
                     && betterPartial(snapshot, current, bestUnloaded, surfaceStart)) {
                 bestUnloaded = current;
             }
-            if (reached(snapshot, current.pos, routeStep, target)) {
-                return new PathPlan(start, toSteps(current), current.pos, PathOutcome.REACHED_TARGET);
+            if (current.dropRecoveryY == NO_DROP_DEBT
+                    && reached(snapshot, current.pos, routeStep, target)) {
+                return new PathPlan(
+                        start,
+                        toSteps(current),
+                        current.pos,
+                        PathOutcome.REACHED_TARGET,
+                        expandedNodes
+                );
             }
-            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)) {
+            if (safeCandidate) {
                 if (touchesUnloadedFrontier(snapshot, current.pos, target)) {
                     return new PathPlan(
                             start,
                             toSteps(current),
                             current.pos,
-                            PathOutcome.UNLOADED_FRONTIER
+                            PathOutcome.UNLOADED_FRONTIER,
+                            expandedNodes
                     );
                 }
                 if (touchesLocalSearchSeam(current.pos, start)) {
-                    return new PathPlan(start, toSteps(current), current.pos, PathOutcome.SAFE_FRONTIER);
+                    return new PathPlan(
+                            start,
+                            toSteps(current),
+                            current.pos,
+                            PathOutcome.SAFE_FRONTIER,
+                            expandedNodes
+                    );
+                }
+            }
+
+            if (cliffCandidate != null) {
+                if (safeCandidate
+                        && current.dropRecoveryY == NO_DROP_DEBT
+                        && current.heuristic + 1.0e-6 < cliffCandidate.heuristic) {
+                    cliffCandidate = null;
+                    cliffProofResolved = true;
+                } else {
+                    cliffProofExpansions++;
                 }
             }
 
             List<SearchNode> nextNodes = neighbors(snapshot, current, start, target, config);
-            if (isSafePartialCandidate(snapshot, current, startNode, surfaceStart, startCoveredDepth)
-                    && onlyTargetImprovingContinuationAddsDropDebt(current, nextNodes, target)
-                    && betterPartial(snapshot, current, bestDropFrontier, surfaceStart)) {
-                bestDropFrontier = current;
+            if (!cliffProofResolved
+                    && cliffCandidate == null
+                    && safeCandidate
+                    && onlyTargetImprovingContinuationAddsDropDebt(current, nextNodes, target)) {
+                cliffCandidate = current;
+                cliffProofExpansions = 0;
             }
             for (SearchNode next : nextNodes) {
-                SearchKey key = new SearchKey(next.pos, next.breakCount, next.placeCount, next.dropRecoveryY);
-                Double known = bestCost.get(key);
-                if (known != null && known <= next.cost) {
-                    continue;
+                if (registerParetoState(paretoStates, next)) {
+                    open.add(next);
                 }
-                bestCost.put(key, next.cost);
-                open.add(next);
+            }
+            if (cliffCandidate != null && cliffProofExpansions >= CLIFF_PROOF_NODE_BUDGET) {
+                return new PathPlan(
+                        start,
+                        toSteps(bestSafe),
+                        bestSafe.pos,
+                        PathOutcome.SAFE_FRONTIER,
+                        expandedNodes
+                );
             }
         }
 
         if (Thread.currentThread().isInterrupted()) {
-            return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT);
+            return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT, expandedNodes);
         }
-        if (!open.isEmpty() && visited >= maxNodes) {
+        if (!open.isEmpty() && expandedNodes >= maxNodes) {
             if (bestUnloaded != null) {
                 return new PathPlan(
                         start,
                         toSteps(bestUnloaded),
                         bestUnloaded.pos,
-                        PathOutcome.UNLOADED_FRONTIER
+                        PathOutcome.UNLOADED_FRONTIER,
+                        expandedNodes
                 );
             }
             if (bestSafe != null) {
-                return new PathPlan(start, toSteps(bestSafe), bestSafe.pos, PathOutcome.SAFE_FRONTIER);
+                return new PathPlan(
+                        start,
+                        toSteps(bestSafe),
+                        bestSafe.pos,
+                        PathOutcome.SAFE_FRONTIER,
+                        expandedNodes
+                );
             }
-            return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT);
+            return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT, expandedNodes);
         }
         if (bestUnloaded != null) {
-            return new PathPlan(start, toSteps(bestUnloaded), bestUnloaded.pos, PathOutcome.UNLOADED_FRONTIER);
+            return new PathPlan(
+                    start,
+                    toSteps(bestUnloaded),
+                    bestUnloaded.pos,
+                    PathOutcome.UNLOADED_FRONTIER,
+                    expandedNodes
+            );
         }
         if (bestSafe != null) {
-            return new PathPlan(start, toSteps(bestSafe), bestSafe.pos, PathOutcome.SAFE_FRONTIER);
+            return new PathPlan(
+                    start,
+                    toSteps(bestSafe),
+                    bestSafe.pos,
+                    PathOutcome.SAFE_FRONTIER,
+                    expandedNodes
+            );
         }
         Optional<PathStep> immediateBreak = immediateBreakStep(snapshot, start, target, config);
         if (immediateBreak.isPresent()) {
-            return new PathPlan(start, List.of(immediateBreak.get()), start, PathOutcome.SAFE_FRONTIER);
+            return new PathPlan(
+                    start,
+                    List.of(immediateBreak.get()),
+                    start,
+                    PathOutcome.SAFE_FRONTIER,
+                    expandedNodes
+            );
         }
-        return new PathPlan(start, List.of(), start, PathOutcome.NO_PATH);
+        return new PathPlan(start, List.of(), start, PathOutcome.NO_PATH, expandedNodes);
+    }
+
+    private Comparator<SearchNode> searchOrder() {
+        return Comparator.<SearchNode>comparingDouble(SearchNode::score)
+                .thenComparingDouble(SearchNode::heuristic)
+                .thenComparingDouble(SearchNode::cost)
+                .thenComparingInt(node -> node.pos.getX())
+                .thenComparingInt(node -> node.pos.getY())
+                .thenComparingInt(node -> node.pos.getZ())
+                .thenComparingInt(SearchNode::breakCount)
+                .thenComparingInt(SearchNode::placeCount)
+                .thenComparingInt(SearchNode::dropRecoveryY)
+                .thenComparingInt(node -> node.action.ordinal());
+    }
+
+    private boolean registerParetoState(
+            Map<BaseSearchKey, List<DebtState>> paretoStates,
+            SearchNode node
+    ) {
+        BaseSearchKey key = new BaseSearchKey(node.pos, node.breakCount, node.placeCount);
+        List<DebtState> states = paretoStates.computeIfAbsent(key, ignored -> new ArrayList<>());
+        DebtState candidate = new DebtState(node.dropRecoveryY, node.cost);
+        for (DebtState state : states) {
+            if (sameDebtState(state, candidate) || dominates(state, candidate)) {
+                return false;
+            }
+        }
+        states.removeIf(state -> dominates(candidate, state));
+        states.add(candidate);
+        return true;
+    }
+
+    private boolean isCurrentParetoState(
+            Map<BaseSearchKey, List<DebtState>> paretoStates,
+            SearchNode node
+    ) {
+        List<DebtState> states = paretoStates.get(
+                new BaseSearchKey(node.pos, node.breakCount, node.placeCount)
+        );
+        if (states == null) {
+            return false;
+        }
+        DebtState candidate = new DebtState(node.dropRecoveryY, node.cost);
+        return states.stream().anyMatch(state -> sameDebtState(state, candidate));
+    }
+
+    private boolean dominates(DebtState candidate, DebtState other) {
+        if (candidate.recoveryY == NO_DROP_DEBT) {
+            return candidate.cost <= other.cost;
+        }
+        if (other.recoveryY == NO_DROP_DEBT) {
+            return false;
+        }
+        return candidate.recoveryY <= other.recoveryY
+                && candidate.cost <= other.cost
+                && (candidate.recoveryY < other.recoveryY || candidate.cost < other.cost);
+    }
+
+    private boolean sameDebtState(DebtState first, DebtState second) {
+        return first.recoveryY == second.recoveryY
+                && Double.compare(first.cost, second.cost) == 0;
     }
 
     private List<PathStep> toSteps(SearchNode node) {
@@ -413,6 +551,10 @@ public final class LocalPathPlanner {
         int coveredDepth = world.coveredDepth(pos);
         int exposure = coveredExposure(coveredDepth);
         int dropRecoveryY = nextDropRecoveryY(current, pos, action);
+        double dropDebtCost = current.dropRecoveryY == NO_DROP_DEBT
+                && dropRecoveryY != NO_DROP_DEBT
+                ? DROP_DEBT_COST
+                : 0.0;
         return new SearchNode(
                 pos,
                 current,
@@ -420,7 +562,7 @@ public final class LocalPathPlanner {
                 actionBlock,
                 breakCount,
                 placeCount,
-                baseCost + exposure * COVERED_STEP_COST,
+                baseCost + exposure * COVERED_STEP_COST + dropDebtCost,
                 heuristic(pos, target),
                 current.undergroundExposure + exposure,
                 Math.max(current.maxCoveredDepth, coveredDepth),
@@ -825,17 +967,33 @@ public final class LocalPathPlanner {
         }
     }
 
-    private record SearchKey(BlockPos pos, int breakCount, int placeCount, int dropRecoveryY) {
+    private record BaseSearchKey(BlockPos pos, int breakCount, int placeCount) {
+    }
+
+    private record DebtState(int recoveryY, double cost) {
     }
 
     public record PathPlan(
             BlockPos plannedStart,
             List<PathStep> steps,
             BlockPos plannedEnd,
-            PathOutcome outcome
+            PathOutcome outcome,
+            int expandedNodes
     ) {
         public PathPlan {
             steps = List.copyOf(steps);
+            if (expandedNodes < 0) {
+                throw new IllegalArgumentException("expandedNodes must be non-negative");
+            }
+        }
+
+        public PathPlan(
+                BlockPos plannedStart,
+                List<PathStep> steps,
+                BlockPos plannedEnd,
+                PathOutcome outcome
+        ) {
+            this(plannedStart, steps, plannedEnd, outcome, 0);
         }
 
         boolean isEmpty() {
