@@ -598,3 +598,40 @@ its source while keeping the current safety model. It is larger than a direct
 rollback but substantially smaller and less risky than a hierarchical rewrite.
 Its success criteria are measurable in deterministic tests and directly match
 the reported five-/six-step, three-second, and one-block-twitch failures.
+
+## 12. Implementation and verification record
+
+Implementation completed on branch `26.2/navigation-pipeline-repair` on
+2026-07-14. The original checklists above are intentionally preserved so this
+document remains reusable; the executed task commits are:
+
+| Commit | Implemented outcome |
+| --- | --- |
+| `84a488b` | Progress-first safe frontier and executable node-limit prefix |
+| `8f0d8fd` | Pareto drop debt, modification-search gate, bounded cliff proof |
+| `bdfa0cc` | Rolling lookahead cadence and failure-only retry state |
+| `5a9e0ad` | Seven-batch immutable terrain snapshot capture |
+| `cdd4137` | Explicit unloaded-frontier continuation and seam terrain probe |
+| `c076eca` | Actual-feet prefix trim/live validation and planning-gap brake |
+
+Final automated evidence:
+
+- two forced 16-test planner reruns passed; the warmed suite took `4.349s`,
+  `cliffFrontierUsesBoundedProofBudget()` took `0.476s`, and the deterministic
+  cliff count is 389 expanded nodes;
+- the full clean build passed 24 suites / 180 tests with zero failures, errors,
+  or skips;
+- all four Fabric, mixin, and language JSON resources parsed successfully;
+- `mappywall-0.1.31.jar` embeds version `0.1.31`, declares client environment,
+  and contains the planner, controller, coordinator, cadence/retry, terrain
+  probe, prefix validator, and plan preparer classes;
+- independent task reviews found no remaining Critical, Important, or Minor
+  issue in the unloaded-continuation and stale-prefix changes;
+- zero-context controller diffs contain no changes to speed constants, normal
+  or aggressive cruise methods, swimming, boat/Elytra control, block action
+  timing, interaction, or packet-send methods.
+
+The deterministic acceptance matrix is therefore complete. The manual game
+matrix in section 8 remains the required real-client validation because unit
+tests cannot reproduce server latency, chunk streaming, collision correction,
+or player perception of frame pacing.
