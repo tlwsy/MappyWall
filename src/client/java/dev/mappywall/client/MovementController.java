@@ -4,6 +4,7 @@ import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.NavigationPlanningCadence;
 import dev.mappywall.core.NavigationPlanningRetryState;
+import dev.mappywall.core.NavigationTerrainProbe;
 import dev.mappywall.core.PathSegmentCoordinator;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
@@ -359,6 +360,31 @@ public final class MovementController {
             return false;
         }
         return step.actionBlock() == null || client.level.hasChunkAt(step.actionBlock());
+    }
+
+    private boolean isContinuationTerrainReady(
+            Minecraft client,
+            RouteStep target,
+            BlockPos seam
+    ) {
+        if (client.level == null || client.player == null) {
+            return false;
+        }
+
+        BlockPos navigationTarget = navigationTarget(seam, target);
+        for (PathSegmentCoordinator.Anchor column : NavigationTerrainProbe.targetDirectedColumns(
+                anchor(seam),
+                anchor(navigationTarget),
+                4
+        )) {
+            BlockPos feet = blockPos(column);
+            if (!client.level.hasChunkAt(feet)
+                    || !client.level.hasChunkAt(feet.above())
+                    || !client.level.hasChunkAt(feet.below())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean isAdjacentActionStep(LocalPlayer player, LocalPathPlanner.PathStep step) {
@@ -1737,7 +1763,15 @@ public final class MovementController {
 
         boolean suffixStable = pathSegments.remainingStepSnapshot().stream()
                 .noneMatch(this::isModifyingStep);
-        pathSegments.beginLookahead(suffixStable).ifPresent(request -> {
+        PathSegmentCoordinator.ContinuationCandidate candidate =
+                pathSegments.continuationCandidate().orElse(null);
+        if (candidate == null) {
+            return;
+        }
+        boolean terrainReady = candidate.policy()
+                == PathSegmentCoordinator.ContinuationPolicy.WHEN_TERRAIN_READY
+                && isContinuationTerrainReady(client, target, blockPos(candidate.seam()));
+        pathSegments.beginLookahead(suffixStable, terrainReady).ifPresent(request -> {
             BlockPos seam = blockPos(request.seam());
             beginCapture(
                     client,
@@ -1915,12 +1949,22 @@ public final class MovementController {
             LocalPathPlanner.PathPlan plan
     ) {
         boolean modifying = plan.steps().stream().anyMatch(this::isModifyingStep);
+        PathSegmentCoordinator.ContinuationPolicy continuationPolicy;
+        if (modifying || plan.outcome() == LocalPathPlanner.PathOutcome.REACHED_TARGET) {
+            continuationPolicy = PathSegmentCoordinator.ContinuationPolicy.NONE;
+        } else if (plan.outcome() == LocalPathPlanner.PathOutcome.SAFE_FRONTIER) {
+            continuationPolicy = PathSegmentCoordinator.ContinuationPolicy.IMMEDIATE;
+        } else if (plan.outcome() == LocalPathPlanner.PathOutcome.UNLOADED_FRONTIER) {
+            continuationPolicy = PathSegmentCoordinator.ContinuationPolicy.WHEN_TERRAIN_READY;
+        } else {
+            continuationPolicy = PathSegmentCoordinator.ContinuationPolicy.NONE;
+        }
         return new PathSegmentCoordinator.Segment<>(
                 anchor(plan.plannedStart()),
                 anchor(plan.plannedEnd()),
                 plan.steps(),
                 plan.outcome() == LocalPathPlanner.PathOutcome.REACHED_TARGET,
-                plan.outcome() == LocalPathPlanner.PathOutcome.SAFE_FRONTIER && !modifying
+                continuationPolicy
         );
     }
 
@@ -2719,20 +2763,24 @@ public final class MovementController {
     }
 
     private BlockPos navigationTarget(LocalPlayer player, RouteStep target) {
+        return navigationTarget(player.blockPosition(), target);
+    }
+
+    private BlockPos navigationTarget(BlockPos origin, RouteStep target) {
         if (target.state() == RouteStepState.OPENED) {
-            return new BlockPos(target.targetBlock().x(), player.blockPosition().getY(), target.targetBlock().z());
+            return new BlockPos(target.targetBlock().x(), origin.getY(), target.targetBlock().z());
         }
         int targetX = Mth.clamp(
-                player.blockPosition().getX(),
+                origin.getX(),
                 interiorMin(target.region().bounds().minX(), target.region().bounds().maxX()),
                 interiorMax(target.region().bounds().minX(), target.region().bounds().maxX())
         );
         int targetZ = Mth.clamp(
-                player.blockPosition().getZ(),
+                origin.getZ(),
                 interiorMin(target.region().bounds().minZ(), target.region().bounds().maxZ()),
                 interiorMax(target.region().bounds().minZ(), target.region().bounds().maxZ())
         );
-        return new BlockPos(targetX, player.blockPosition().getY(), targetZ);
+        return new BlockPos(targetX, origin.getY(), targetZ);
     }
 
     private int interiorMin(int min, int max) {

@@ -20,17 +20,31 @@ public final class PathSegmentCoordinator<T> {
     public record Anchor(int x, int y, int z) {
     }
 
+    public enum ContinuationPolicy {
+        NONE,
+        IMMEDIATE,
+        WHEN_TERRAIN_READY
+    }
+
+    public record ContinuationCandidate(Anchor seam, ContinuationPolicy policy) {
+        public ContinuationCandidate {
+            Objects.requireNonNull(seam, "seam");
+            Objects.requireNonNull(policy, "policy");
+        }
+    }
+
     public record Segment<T>(
             Anchor start,
             Anchor end,
             List<T> steps,
             boolean terminal,
-            boolean prefetchable
+            ContinuationPolicy continuationPolicy
     ) {
         public Segment {
             Objects.requireNonNull(start, "start");
             Objects.requireNonNull(end, "end");
             Objects.requireNonNull(steps, "steps");
+            Objects.requireNonNull(continuationPolicy, "continuationPolicy");
             steps = List.copyOf(steps);
         }
     }
@@ -58,13 +72,31 @@ public final class PathSegmentCoordinator<T> {
         buffered = null;
     }
 
-    public Optional<LookaheadRequest> beginLookahead(boolean suffixStable) {
+    public Optional<ContinuationCandidate> continuationCandidate() {
+        if (targetKey == null
+                || active == null
+                || activeStepIndex >= active.steps().size()
+                || active.terminal()
+                || active.continuationPolicy() == ContinuationPolicy.NONE
+                || pending != null
+                || buffered != null) {
+            return Optional.empty();
+        }
+        return Optional.of(new ContinuationCandidate(
+                active.end(),
+                active.continuationPolicy()
+        ));
+    }
+
+    public Optional<LookaheadRequest> beginLookahead(boolean suffixStable, boolean terrainReady) {
         if (!suffixStable
                 || targetKey == null
                 || active == null
                 || activeStepIndex >= active.steps().size()
                 || active.terminal()
-                || !active.prefetchable()
+                || active.continuationPolicy() == ContinuationPolicy.NONE
+                || (active.continuationPolicy() == ContinuationPolicy.WHEN_TERRAIN_READY
+                        && !terrainReady)
                 || pending != null
                 || buffered != null) {
             return Optional.empty();
