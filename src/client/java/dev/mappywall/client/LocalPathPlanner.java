@@ -167,21 +167,23 @@ public final class LocalPathPlanner {
                 bestCost.put(key, next.cost);
                 open.add(next);
             }
-            if (!Thread.currentThread().isInterrupted()
-                    && !open.isEmpty()
-                    && visited < maxNodes
-                    && visited >= maxNodes - 1
-                    && bestDropFrontier != null) {
-                return new PathPlan(
-                        start,
-                        toSteps(bestDropFrontier),
-                        bestDropFrontier.pos,
-                        PathOutcome.SAFE_FRONTIER
-                );
-            }
         }
 
-        if (Thread.currentThread().isInterrupted() || (!open.isEmpty() && visited >= maxNodes)) {
+        if (Thread.currentThread().isInterrupted()) {
+            return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT);
+        }
+        if (!open.isEmpty() && visited >= maxNodes) {
+            if (bestUnloaded != null) {
+                return new PathPlan(
+                        start,
+                        toSteps(bestUnloaded),
+                        bestUnloaded.pos,
+                        PathOutcome.UNLOADED_FRONTIER
+                );
+            }
+            if (bestSafe != null) {
+                return new PathPlan(start, toSteps(bestSafe), bestSafe.pos, PathOutcome.SAFE_FRONTIER);
+            }
             return new PathPlan(start, List.of(), start, PathOutcome.NODE_LIMIT);
         }
         if (bestUnloaded != null) {
@@ -694,11 +696,23 @@ public final class LocalPathPlanner {
                 return recovery < 0;
             }
         }
+        int progress = Double.compare(candidate.heuristic, incumbent.heuristic);
+        if (progress != 0) {
+            return progress < 0;
+        }
         int cost = Double.compare(candidate.cost, incumbent.cost);
         if (cost != 0) {
             return cost < 0;
         }
-        return candidate.heuristic < incumbent.heuristic;
+        int x = Integer.compare(candidate.pos.getX(), incumbent.pos.getX());
+        if (x != 0) {
+            return x < 0;
+        }
+        int y = Integer.compare(candidate.pos.getY(), incumbent.pos.getY());
+        if (y != 0) {
+            return y < 0;
+        }
+        return candidate.pos.getZ() < incumbent.pos.getZ();
     }
 
     private boolean touchesUnloadedFrontier(NavigationSnapshot world, BlockPos pos, BlockPos target) {

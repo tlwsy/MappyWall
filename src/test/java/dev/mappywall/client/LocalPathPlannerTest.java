@@ -91,8 +91,8 @@ class LocalPathPlannerTest {
     }
 
     @Test
-    void reportsNodeLimitWhenBudgetExpiresBeforeAUsableFrontier() {
-        LocalPathPlanner budgetedPlanner = new LocalPathPlanner(2);
+    void nodeLimitWithoutSafeProgressRemainsNonExecutable() {
+        LocalPathPlanner budgetedPlanner = new LocalPathPlanner(1);
         TestTerrain terrain = new TestTerrain().flatSurface(64);
 
         PathPlan plan = budgetedPlanner.plan(
@@ -103,6 +103,22 @@ class LocalPathPlannerTest {
 
         assertEquals(PathOutcome.NODE_LIMIT, plan.outcome());
         assertTrue(plan.steps().isEmpty());
+    }
+
+    @Test
+    void nodeBudgetReturnsBestSafeProgress() {
+        LocalPathPlanner budgetedPlanner = new LocalPathPlanner(4);
+        TestTerrain terrain = new TestTerrain().flatSurface(64);
+
+        PathPlan plan = budgetedPlanner.plan(
+                terrain.snapshot(new BlockPos(0, 65, 0)),
+                routeTo(80, 0),
+                config()
+        );
+
+        assertEquals(PathOutcome.SAFE_FRONTIER, plan.outcome());
+        assertFalse(plan.steps().isEmpty());
+        assertEquals(new BlockPos(3, 65, 0), plan.plannedEnd());
     }
 
     @Test
@@ -137,7 +153,7 @@ class LocalPathPlannerTest {
     }
 
     @Test
-    void partialFrontierPrefersLowerCostBeforeTargetHeuristicAtEqualSurfaceRisk() {
+    void partialFrontierMaximizesProgressAtEqualSafety() {
         TestTerrain terrain = new TestTerrain().isolatedSurface(
                 new BlockPos(0, 65, 0),
                 new BlockPos(1, 65, 0),
@@ -150,7 +166,7 @@ class LocalPathPlannerTest {
         PathPlan plan = planner.plan(terrain.snapshot(new BlockPos(0, 65, 0)), routeTo(20, 0), config());
 
         assertEquals(PathOutcome.SAFE_FRONTIER, plan.outcome());
-        assertEquals(new BlockPos(1, 65, 0), plan.plannedEnd());
+        assertEquals(new BlockPos(3, 65, 1), plan.plannedEnd());
     }
 
     @Test
