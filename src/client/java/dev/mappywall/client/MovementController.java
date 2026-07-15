@@ -1,11 +1,13 @@
 package dev.mappywall.client;
 
+import dev.mappywall.client.LocalPathPlanner.ContinuationContext;
 import dev.mappywall.core.AutomationStyle;
 import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.NavigationPlanningCadence;
 import dev.mappywall.core.NavigationPlanningRetryState;
 import dev.mappywall.core.NavigationTerrainProbe;
 import dev.mappywall.core.PathSegmentCoordinator;
+import dev.mappywall.core.PathSegmentCoordinator.PreviewPolicy;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.RunMode;
@@ -701,7 +703,7 @@ public final class MovementController {
     }
 
     public List<BlockPos> pathSnapshot() {
-        return pathSegments.remainingStepSnapshot().stream()
+        return pathSegments.previewStepSnapshot().stream()
                 .map(LocalPathPlanner.PathStep::pos)
                 .toList();
     }
@@ -1775,7 +1777,12 @@ public final class MovementController {
         PlanningRequest request = pendingPlanningRequest;
         pendingCapture = null;
         pendingPlan = PATH_EXECUTOR.submit(
-                () -> pathPlanner.plan(snapshot, request.target(), request.config())
+                () -> pathPlanner.plan(
+                        snapshot,
+                        request.target(),
+                        request.config(),
+                        request.continuationContext()
+                )
         );
     }
 
@@ -1792,24 +1799,27 @@ public final class MovementController {
             return;
         }
 
-        boolean suffixStable = pathSegments.remainingStepSnapshot().stream()
+        List<LocalPathPlanner.PathStep> suffix = pathSegments.remainingStepSnapshot();
+        boolean suffixStable = suffix.stream()
                 .noneMatch(this::isModifyingStep);
         PathSegmentCoordinator.ContinuationCandidate candidate =
                 pathSegments.continuationCandidate().orElse(null);
         if (candidate == null) {
             return;
         }
+        BlockPos seam = blockPos(candidate.seam());
+        ContinuationContext continuationContext = ContinuationContext.fromSuffix(suffix, seam);
         boolean terrainReady = candidate.policy()
                 == PathSegmentCoordinator.ContinuationPolicy.WHEN_TERRAIN_READY
-                && isContinuationTerrainReady(client, target, blockPos(candidate.seam()));
+                && isContinuationTerrainReady(client, target, seam);
         pathSegments.beginLookahead(suffixStable, terrainReady).ifPresent(request -> {
-            BlockPos seam = blockPos(request.seam());
             beginCapture(
                     client,
                     target,
                     seam,
                     PlanRequestKind.LOOKAHEAD,
-                    request
+                    request,
+                    continuationContext
             );
         });
     }
@@ -1831,7 +1841,8 @@ public final class MovementController {
                 target,
                 client.player.blockPosition(),
                 PlanRequestKind.INITIAL,
-                null
+                null,
+                ContinuationContext.none()
         );
     }
 
@@ -1840,7 +1851,8 @@ public final class MovementController {
             RouteStep target,
             BlockPos plannedStart,
             PlanRequestKind kind,
-            PathSegmentCoordinator.LookaheadRequest lookaheadRequest
+            PathSegmentCoordinator.LookaheadRequest lookaheadRequest,
+            ContinuationContext continuationContext
     ) {
         if (client.level == null) {
             if (lookaheadRequest != null) {
@@ -1858,7 +1870,8 @@ public final class MovementController {
                 target,
                 navigationConfig(),
                 plannedStart,
-                lookaheadRequest
+                lookaheadRequest,
+                continuationContext
         );
         pendingCapture = capture;
     }
@@ -2001,12 +2014,16 @@ public final class MovementController {
         } else {
             continuationPolicy = PathSegmentCoordinator.ContinuationPolicy.NONE;
         }
+        PreviewPolicy previewPolicy = plan.usedRetreatFallback()
+                ? PreviewPolicy.AFTER_PROMOTION
+                : PreviewPolicy.CONTINUOUS;
         return new PathSegmentCoordinator.Segment<>(
                 anchor(plan.plannedStart()),
                 anchor(plan.plannedEnd()),
                 plan.steps(),
                 plan.outcome() == LocalPathPlanner.PathOutcome.REACHED_TARGET,
-                continuationPolicy
+                continuationPolicy,
+                previewPolicy
         );
     }
 
@@ -2872,7 +2889,8 @@ public final class MovementController {
             RouteStep target,
             AutoNavigationConfig config,
             BlockPos plannedStart,
-            PathSegmentCoordinator.LookaheadRequest lookaheadRequest
+            PathSegmentCoordinator.LookaheadRequest lookaheadRequest,
+            ContinuationContext continuationContext
     ) {
         private PlanningRequest {
             Objects.requireNonNull(kind, "kind");
@@ -2880,6 +2898,7 @@ public final class MovementController {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(config, "config");
             Objects.requireNonNull(plannedStart, "plannedStart");
+            Objects.requireNonNull(continuationContext, "continuationContext");
             if (kind == PlanRequestKind.LOOKAHEAD) {
                 Objects.requireNonNull(lookaheadRequest, "lookaheadRequest");
             } else if (lookaheadRequest != null) {

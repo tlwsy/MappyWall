@@ -2,19 +2,116 @@ package dev.mappywall.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.mappywall.client.LocalPathPlanner;
+import dev.mappywall.client.MovementController;
 import dev.mappywall.core.PathSegmentCoordinator.Anchor;
 import dev.mappywall.core.PathSegmentCoordinator.ContinuationPolicy;
 import dev.mappywall.core.PathSegmentCoordinator.LookaheadRequest;
+import dev.mappywall.core.PathSegmentCoordinator.PreviewPolicy;
 import dev.mappywall.core.PathSegmentCoordinator.Segment;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.Test;
 
 class NavigationContinuityScenarioTest {
+    @Test
+    void acceptedForwardLookaheadExtendsVisiblePathWithoutChangingCurrentStep()
+            throws ReflectiveOperationException {
+        MovementController controller = new MovementController();
+        PathSegmentCoordinator<LocalPathPlanner.PathStep> coordinator =
+                controllerPathSegments(controller);
+        coordinator.resetTarget("forward-preview-route");
+        coordinator.installInitial(pathSegment(
+                0,
+                21,
+                false,
+                ContinuationPolicy.IMMEDIATE,
+                PreviewPolicy.CONTINUOUS
+        ));
+        advance(coordinator, 7);
+        LocalPathPlanner.PathStep current = coordinator.currentStep().orElseThrow();
+
+        LookaheadRequest request = coordinator.beginLookahead(true, false).orElseThrow();
+        assertTrue(coordinator.acceptLookahead(
+                request,
+                pathSegment(
+                        21,
+                        42,
+                        false,
+                        ContinuationPolicy.IMMEDIATE,
+                        PreviewPolicy.CONTINUOUS
+                )
+        ));
+
+        assertEquals(blockRange(8, 42), controller.pathSnapshot());
+        assertEquals(current, coordinator.currentStep().orElseThrow());
+        assertEquals(blockRange(8, 21), positions(coordinator.remainingStepSnapshot()));
+    }
+
+    @Test
+    void acceptedRetreatLookaheadStaysHiddenUntilPromotion()
+            throws ReflectiveOperationException {
+        MovementController controller = new MovementController();
+        PathSegmentCoordinator<LocalPathPlanner.PathStep> coordinator =
+                controllerPathSegments(controller);
+        coordinator.resetTarget("retreat-preview-route");
+        coordinator.installInitial(pathSegment(
+                0,
+                21,
+                false,
+                ContinuationPolicy.IMMEDIATE,
+                PreviewPolicy.CONTINUOUS
+        ));
+        advance(coordinator, 7);
+        LocalPathPlanner.PathStep current = coordinator.currentStep().orElseThrow();
+
+        LookaheadRequest request = coordinator.beginLookahead(true, false).orElseThrow();
+        assertTrue(coordinator.acceptLookahead(
+                request,
+                pathSegment(
+                        21,
+                        42,
+                        false,
+                        ContinuationPolicy.IMMEDIATE,
+                        PreviewPolicy.AFTER_PROMOTION
+                )
+        ));
+
+        assertEquals(blockRange(8, 21), controller.pathSnapshot());
+        assertEquals(current, coordinator.currentStep().orElseThrow());
+        assertEquals(blockRange(8, 21), positions(coordinator.remainingStepSnapshot()));
+        advance(coordinator, 14);
+        assertTrue(controller.pathSnapshot().isEmpty());
+
+        assertTrue(coordinator.promoteBuffered());
+        assertEquals(blockRange(22, 42), controller.pathSnapshot());
+        assertEquals(block(22), coordinator.currentStep().orElseThrow().pos());
+    }
+
+    @Test
+    void plannerRetreatClassificationSelectsDeferredPreviewPolicy()
+            throws ReflectiveOperationException {
+        MovementController controller = new MovementController();
+
+        assertEquals(
+                PreviewPolicy.CONTINUOUS,
+                controllerSegment(controller, pathPlan(false)).previewPolicy()
+        );
+        assertEquals(
+                PreviewPolicy.AFTER_PROMOTION,
+                controllerSegment(controller, pathPlan(true)).previewPolicy()
+        );
+    }
+
     @Test
     void sixStepSegmentsRemainContinuousWithSevenTickCaptureAndFiveTickPlanner() {
         NavigationPlanningCadence cadence = NavigationPlanningCadence.defaults();
@@ -131,6 +228,107 @@ class NavigationContinuityScenarioTest {
             visited.add(step);
             assertTrue(driver.advance());
         }
+    }
+
+    private static <T> void advance(PathSegmentCoordinator<T> coordinator, int steps) {
+        for (int step = 0; step < steps; step++) {
+            assertTrue(coordinator.advance());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static PathSegmentCoordinator<LocalPathPlanner.PathStep> controllerPathSegments(
+            MovementController controller
+    ) throws ReflectiveOperationException {
+        Field field = MovementController.class.getDeclaredField("pathSegments");
+        assertEquals(PathSegmentCoordinator.class, field.getType());
+        ParameterizedType genericType = assertInstanceOf(
+                ParameterizedType.class,
+                field.getGenericType()
+        );
+        assertEquals(PathSegmentCoordinator.class, genericType.getRawType());
+        assertEquals(
+                List.of(LocalPathPlanner.PathStep.class),
+                List.of(genericType.getActualTypeArguments())
+        );
+        field.setAccessible(true);
+        return (PathSegmentCoordinator<LocalPathPlanner.PathStep>) assertInstanceOf(
+                PathSegmentCoordinator.class,
+                field.get(controller)
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Segment<LocalPathPlanner.PathStep> controllerSegment(
+            MovementController controller,
+            LocalPathPlanner.PathPlan plan
+    ) throws ReflectiveOperationException {
+        Method method = MovementController.class.getDeclaredMethod(
+                "toSegment",
+                LocalPathPlanner.PathPlan.class
+        );
+        assertEquals(Segment.class, method.getReturnType());
+        assertEquals(
+                List.of(LocalPathPlanner.PathPlan.class),
+                List.of(method.getParameterTypes())
+        );
+        method.setAccessible(true);
+        return (Segment<LocalPathPlanner.PathStep>) assertInstanceOf(
+                Segment.class,
+                method.invoke(controller, plan)
+        );
+    }
+
+    private static LocalPathPlanner.PathPlan pathPlan(boolean usedRetreatFallback) {
+        return new LocalPathPlanner.PathPlan(
+                block(0),
+                pathSteps(1, 2),
+                block(2),
+                LocalPathPlanner.PathOutcome.SAFE_FRONTIER,
+                2,
+                usedRetreatFallback
+        );
+    }
+
+    private static Segment<LocalPathPlanner.PathStep> pathSegment(
+            int start,
+            int end,
+            boolean terminal,
+            ContinuationPolicy continuationPolicy,
+            PreviewPolicy previewPolicy
+    ) {
+        return new Segment<>(
+                anchor(start),
+                anchor(end),
+                pathSteps(start + 1, end),
+                terminal,
+                continuationPolicy,
+                previewPolicy
+        );
+    }
+
+    private static List<LocalPathPlanner.PathStep> pathSteps(int first, int lastInclusive) {
+        return blockRange(first, lastInclusive).stream()
+                .map(pos -> new LocalPathPlanner.PathStep(
+                        pos,
+                        LocalPathPlanner.StepAction.WALK,
+                        null
+                ))
+                .toList();
+    }
+
+    private static List<BlockPos> positions(List<LocalPathPlanner.PathStep> steps) {
+        return steps.stream().map(LocalPathPlanner.PathStep::pos).toList();
+    }
+
+    private static List<BlockPos> blockRange(int first, int lastInclusive) {
+        return range(first, lastInclusive).stream()
+                .map(NavigationContinuityScenarioTest::block)
+                .toList();
+    }
+
+    private static BlockPos block(int x) {
+        return new BlockPos(x, 64, 0);
     }
 
     private static Segment<Integer> segment(int start, int end) {
