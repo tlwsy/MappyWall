@@ -7,9 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mappywall.client.LocalPathPlanner.Cell;
+import dev.mappywall.client.LocalPathPlanner.ContinuationContext;
 import dev.mappywall.client.LocalPathPlanner.NavigationSnapshot;
 import dev.mappywall.client.LocalPathPlanner.PathOutcome;
 import dev.mappywall.client.LocalPathPlanner.PathPlan;
+import dev.mappywall.client.LocalPathPlanner.PathStep;
 import dev.mappywall.client.LocalPathPlanner.StepAction;
 import dev.mappywall.core.BlockTarget;
 import dev.mappywall.core.MapBounds;
@@ -17,8 +19,10 @@ import dev.mappywall.core.MapRegion;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.WallPos;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
@@ -30,6 +34,173 @@ class LocalPathPlannerTest {
     @Test
     void clientPlannerIsAvailableToNavigationTests() {
         assertNotNull(planner);
+    }
+
+    @Test
+    void continuationContextKeepsOnlyEightPreSeamNodesAndEntryDirection() {
+        ArrayList<PathStep> suffix = new ArrayList<>();
+        for (int x = 0; x <= 10; x++) {
+            suffix.add(new PathStep(new BlockPos(x, 65, 0), StepAction.WALK, null));
+        }
+        BlockPos seam = new BlockPos(10, 65, 0);
+
+        ContinuationContext context = ContinuationContext.fromSuffix(suffix, seam);
+
+        assertTrue(context.constrained());
+        assertEquals(1, context.approachDx());
+        assertEquals(0, context.approachDz());
+        assertEquals(8, context.recentTrail().size());
+        assertTrue(context.recentTrail().contains(new BlockPos(2, 65, 0)));
+        assertTrue(context.recentTrail().contains(new BlockPos(9, 65, 0)));
+        assertFalse(context.recentTrail().contains(new BlockPos(1, 65, 0)));
+        assertFalse(context.recentTrail().contains(seam));
+        assertTrue(context.allows(seam, seam.offset(0, 0, 1)));
+        assertTrue(context.allows(seam, seam.offset(1, 0, 0)));
+        assertFalse(context.allows(seam, seam.offset(-1, 0, 1)));
+    }
+
+    @Test
+    void invalidContinuationSuffixSafelyProducesNoConstraint() {
+        BlockPos seam = new BlockPos(4, 65, 3);
+        List<PathStep> verticalSuffix = List.of(
+                new PathStep(seam.below(), StepAction.JUMP, null),
+                new PathStep(seam, StepAction.JUMP, null)
+        );
+
+        assertEquals(ContinuationContext.none(), ContinuationContext.fromSuffix(List.of(), seam));
+        assertEquals(
+                ContinuationContext.none(),
+                ContinuationContext.fromSuffix(List.of(new PathStep(seam, StepAction.WALK, null)), seam)
+        );
+        assertEquals(ContinuationContext.none(), ContinuationContext.fromSuffix(verticalSuffix, seam));
+        assertEquals(
+                ContinuationContext.none(),
+                ContinuationContext.fromSuffix(
+                        List.of(
+                                new PathStep(seam.offset(-1, 0, 0), StepAction.WALK, null),
+                                new PathStep(seam.offset(1, 0, 0), StepAction.WALK, null)
+                        ),
+                        seam
+                )
+        );
+        assertFalse(ContinuationContext.none().constrained());
+        assertTrue(ContinuationContext.none().allows(seam, seam.offset(-1, 0, 0)));
+    }
+
+    @Test
+    void continuationContextRejectsRecentTrailInsideAllowedHalfPlane() {
+        BlockPos seam = new BlockPos(0, 65, 0);
+        BlockPos recentForwardNode = new BlockPos(1, 65, 1);
+        ContinuationContext context = new ContinuationContext(
+                1,
+                0,
+                Set.of(recentForwardNode)
+        );
+
+        assertFalse(context.allows(seam, recentForwardNode));
+        assertTrue(context.allows(seam, new BlockPos(1, 65, -1)));
+    }
+
+    @Test
+    void constrainedPlacementIgnoresForbiddenWalkWhenChoosingAllowedBridge() {
+        BlockPos seam = new BlockPos(0, 65, 0);
+        BlockPos recentSideNode = new BlockPos(0, 65, 1);
+        TestTerrain terrain = new TestTerrain().isolatedSurface(
+                seam,
+                new BlockPos(-1, 65, 0)
+        );
+        ContinuationContext context = new ContinuationContext(
+                1,
+                0,
+                Set.of(recentSideNode)
+        );
+
+        PathPlan plan = planner.plan(
+                terrain.snapshot(seam),
+                routeTo(0, 8),
+                AutoNavigationConfig.aggressiveDefaults(),
+                context
+        );
+
+        assertFalse(plan.usedRetreatFallback());
+        assertFalse(plan.steps().isEmpty());
+        assertEquals(StepAction.PLACE, plan.steps().getFirst().action());
+        assertTrue(plan.steps().stream().allMatch(step -> context.allows(seam, step.pos())));
+    }
+
+    @Test
+    void constrainedContinuationDoesNotReenterRecentTrailOrCrossBehindSeam() {
+        BlockPos seam = new BlockPos(0, 65, 0);
+        TestTerrain terrain = TestTerrain.twoCorridorContinuationDetour();
+        NavigationSnapshot snapshot = terrain.snapshot(seam);
+        RouteStep target = routeTo(0, 10);
+        ContinuationContext context = new ContinuationContext(
+                1,
+                0,
+                Set.of(new BlockPos(-1, 65, 0))
+        );
+
+        PathPlan unconstrained = planner.plan(snapshot, target, config());
+        PathPlan constrained = planner.plan(snapshot, target, config(), context);
+
+        assertEquals(PathOutcome.REACHED_TARGET, unconstrained.outcome());
+        assertEquals(PathOutcome.REACHED_TARGET, constrained.outcome());
+        assertEquals(new BlockPos(-1, 65, 0), unconstrained.steps().getFirst().pos());
+        assertEquals(new BlockPos(1, 65, 0), constrained.steps().getFirst().pos());
+        assertTrue(unconstrained.steps().size() < constrained.steps().size());
+        assertTrue(constrained.steps().stream().allMatch(step -> context.allows(seam, step.pos())));
+        assertFalse(constrained.usedRetreatFallback());
+    }
+
+    @Test
+    void exhaustiveConstrainedNoPathFallsBackAndMarksNecessaryRetreat() {
+        BlockPos seam = new BlockPos(0, 65, 0);
+        TestTerrain terrain = new TestTerrain().isolatedSurface(
+                seam,
+                new BlockPos(-1, 65, 0),
+                new BlockPos(-2, 65, 0),
+                new BlockPos(-3, 65, 0),
+                new BlockPos(-4, 65, 0),
+                new BlockPos(-5, 65, 0)
+        );
+        NavigationSnapshot snapshot = terrain.snapshot(seam);
+        RouteStep target = routeTo(-8, 0);
+        ContinuationContext context = new ContinuationContext(
+                1,
+                0,
+                Set.of(new BlockPos(-1, 65, 0))
+        );
+        PathPlan unconstrained = planner.plan(snapshot, target, config());
+
+        PathPlan plan = planner.plan(snapshot, target, config(), context);
+
+        assertEquals(PathOutcome.REACHED_TARGET, plan.outcome());
+        assertEquals(new BlockPos(-1, 65, 0), plan.steps().getFirst().pos());
+        assertTrue(plan.usedRetreatFallback());
+        assertEquals(unconstrained.expandedNodes() + 1, plan.expandedNodes());
+    }
+
+    @Test
+    void nodeLimitedConstrainedSearchNeverRelaxesTrailConstraint() {
+        LocalPathPlanner budgetedPlanner = new LocalPathPlanner(1);
+        BlockPos seam = new BlockPos(0, 65, 0);
+        ContinuationContext context = new ContinuationContext(
+                1,
+                0,
+                Set.of(new BlockPos(-1, 65, 0))
+        );
+
+        PathPlan plan = budgetedPlanner.plan(
+                new TestTerrain().flatSurface(64).snapshot(seam),
+                routeTo(80, 0),
+                config(),
+                context
+        );
+
+        assertEquals(PathOutcome.NODE_LIMIT, plan.outcome());
+        assertTrue(plan.steps().isEmpty());
+        assertFalse(plan.usedRetreatFallback());
+        assertEquals(1, plan.expandedNodes());
     }
 
     @Test
@@ -377,6 +548,22 @@ class LocalPathPlannerTest {
             }
             for (int step = 1; step <= 8; step++) {
                 terrain.solid(-step, 47 + step, 0);
+            }
+            return terrain;
+        }
+
+        static TestTerrain twoCorridorContinuationDetour() {
+            TestTerrain terrain = new TestTerrain().isolatedSurface(
+                    new BlockPos(-1, 65, 0),
+                    new BlockPos(0, 65, 0),
+                    new BlockPos(1, 65, 0),
+                    new BlockPos(2, 65, 0)
+            );
+            for (int z = 1; z <= 7; z++) {
+                terrain.isolatedSurface(
+                        new BlockPos(-1, 65, z),
+                        new BlockPos(2, 65, z)
+                );
             }
             return terrain;
         }

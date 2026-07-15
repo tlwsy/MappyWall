@@ -6,8 +6,10 @@ import dev.mappywall.core.MapBounds;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -68,10 +70,52 @@ public final class LocalPathPlanner {
     }
 
     public PathPlan plan(LocalPlayer player, RouteStep routeStep, AutoNavigationConfig config) {
-        return plan(NavigationSnapshot.capture(player), routeStep, config);
+        return plan(
+                NavigationSnapshot.capture(player),
+                routeStep,
+                config,
+                ContinuationContext.none()
+        );
     }
 
     public PathPlan plan(NavigationSnapshot snapshot, RouteStep routeStep, AutoNavigationConfig config) {
+        return plan(snapshot, routeStep, config, ContinuationContext.none());
+    }
+
+    public PathPlan plan(
+            NavigationSnapshot snapshot,
+            RouteStep routeStep,
+            AutoNavigationConfig config,
+            ContinuationContext context
+    ) {
+        Objects.requireNonNull(context, "context");
+        PathPlan strictPlan = planSinglePass(snapshot, routeStep, config, context);
+        if (!context.constrained() || strictPlan.outcome() != PathOutcome.NO_PATH) {
+            return strictPlan;
+        }
+
+        PathPlan relaxedPlan = planSinglePass(
+                snapshot,
+                routeStep,
+                config,
+                ContinuationContext.none()
+        );
+        return new PathPlan(
+                relaxedPlan.plannedStart(),
+                relaxedPlan.steps(),
+                relaxedPlan.plannedEnd(),
+                relaxedPlan.outcome(),
+                saturatedNodeCount(strictPlan.expandedNodes(), relaxedPlan.expandedNodes()),
+                true
+        );
+    }
+
+    private PathPlan planSinglePass(
+            NavigationSnapshot snapshot,
+            RouteStep routeStep,
+            AutoNavigationConfig config,
+            ContinuationContext context
+    ) {
         AutoNavigationConfig nonModifying = new AutoNavigationConfig(
                 false,
                 config.breakListMode(),
@@ -84,24 +128,33 @@ public final class LocalPathPlanner {
                 config.foods(),
                 config.eatAtFoodLevel()
         );
-        PathPlan safePlan = search(snapshot, routeStep, nonModifying);
+        PathPlan safePlan = search(snapshot, routeStep, nonModifying, context);
         if (safePlan.outcome() != PathOutcome.NO_PATH
                 || (!config.blockBreakingEnabled() && !config.blockPlacingEnabled())) {
             return safePlan;
         }
         // Only consider modifying the world once an exhaustive local search cannot
         // make even one step of progress without doing so.
-        PathPlan modifyingPlan = search(snapshot, routeStep, config);
+        PathPlan modifyingPlan = search(snapshot, routeStep, config, context);
         return new PathPlan(
                 modifyingPlan.plannedStart(),
                 modifyingPlan.steps(),
                 modifyingPlan.plannedEnd(),
                 modifyingPlan.outcome(),
-                safePlan.expandedNodes() + modifyingPlan.expandedNodes()
+                saturatedNodeCount(safePlan.expandedNodes(), modifyingPlan.expandedNodes())
         );
     }
 
-    private PathPlan search(NavigationSnapshot snapshot, RouteStep routeStep, AutoNavigationConfig config) {
+    private int saturatedNodeCount(int first, int second) {
+        return (int) Math.min(Integer.MAX_VALUE, (long) first + second);
+    }
+
+    private PathPlan search(
+            NavigationSnapshot snapshot,
+            RouteStep routeStep,
+            AutoNavigationConfig config,
+            ContinuationContext context
+    ) {
         BlockPos start = stableFeetPos(snapshot, snapshot.start());
         BlockPos target = nearestRegionTarget(snapshot, start, routeStep);
         int startCoveredDepth = snapshot.coveredDepth(start);
@@ -197,7 +250,14 @@ public final class LocalPathPlanner {
                 }
             }
 
-            List<SearchNode> nextNodes = neighbors(snapshot, current, start, target, config);
+            List<SearchNode> nextNodes = neighbors(
+                    snapshot,
+                    current,
+                    start,
+                    target,
+                    config,
+                    context
+            );
             if (!cliffProofResolved
                     && cliffCandidate == null
                     && safeCandidate
@@ -263,7 +323,13 @@ public final class LocalPathPlanner {
                     expandedNodes
             );
         }
-        Optional<PathStep> immediateBreak = immediateBreakStep(snapshot, start, target, config);
+        Optional<PathStep> immediateBreak = immediateBreakStep(
+                snapshot,
+                start,
+                target,
+                config,
+                context
+        );
         if (immediateBreak.isPresent()) {
             return new PathPlan(
                     start,
@@ -357,7 +423,8 @@ public final class LocalPathPlanner {
             SearchNode current,
             BlockPos start,
             BlockPos target,
-            AutoNavigationConfig config
+            AutoNavigationConfig config,
+            ContinuationContext context
     ) {
         ArrayList<SearchNode> result = new ArrayList<>(20);
         for (int[] direction : DIRECTIONS) {
@@ -395,6 +462,8 @@ public final class LocalPathPlanner {
             addBreakMove(world, result, current, target, current.pos.offset(dx, 0, dz), config, dx, dz);
         }
 
+        result.removeIf(next -> !context.allows(start, next.pos));
+
         boolean hasReasonableNonPlaceRoute = current.action != StepAction.PLACE
                 && result.stream().anyMatch(next ->
                         next.action != StepAction.PLACE
@@ -416,6 +485,7 @@ public final class LocalPathPlanner {
                 );
             }
         }
+        result.removeIf(next -> !context.allows(start, next.pos));
         return result;
     }
 
@@ -587,12 +657,16 @@ public final class LocalPathPlanner {
             NavigationSnapshot world,
             BlockPos start,
             BlockPos target,
-            AutoNavigationConfig config
+            AutoNavigationConfig config,
+            ContinuationContext context
     ) {
         PathStep best = null;
         double bestScore = Double.MAX_VALUE;
         for (int[] direction : DIRECTIONS) {
             BlockPos pos = start.offset(direction[0], 0, direction[1]);
+            if (!context.allows(start, pos)) {
+                continue;
+            }
             Optional<BlockPos> obstacle = immediateBreakObstacle(world, pos, config);
             if (obstacle.isEmpty()) {
                 continue;
@@ -973,12 +1047,82 @@ public final class LocalPathPlanner {
     private record DebtState(int recoveryY, double cost) {
     }
 
+    public record ContinuationContext(
+            int approachDx,
+            int approachDz,
+            Set<BlockPos> recentTrail
+    ) {
+        private static final int MAX_RECENT_TRAIL = 8;
+        private static final ContinuationContext NONE = new ContinuationContext(0, 0, Set.of());
+
+        public ContinuationContext {
+            approachDx = Integer.signum(approachDx);
+            approachDz = Integer.signum(approachDz);
+            recentTrail = Set.copyOf(Objects.requireNonNull(recentTrail, "recentTrail"));
+        }
+
+        public static ContinuationContext none() {
+            return NONE;
+        }
+
+        public static ContinuationContext fromSuffix(List<PathStep> suffix, BlockPos seam) {
+            Objects.requireNonNull(suffix, "suffix");
+            Objects.requireNonNull(seam, "seam");
+            if (suffix.size() < 2) {
+                return none();
+            }
+
+            PathStep last = suffix.getLast();
+            PathStep penultimate = suffix.get(suffix.size() - 2);
+            if (last == null
+                    || penultimate == null
+                    || last.pos() == null
+                    || penultimate.pos() == null
+                    || !last.pos().equals(seam)) {
+                return none();
+            }
+
+            int dx = Integer.signum(seam.getX() - penultimate.pos().getX());
+            int dz = Integer.signum(seam.getZ() - penultimate.pos().getZ());
+            if (dx == 0 && dz == 0) {
+                return none();
+            }
+
+            LinkedHashSet<BlockPos> recentTrail = new LinkedHashSet<>();
+            int firstRecentIndex = Math.max(0, suffix.size() - MAX_RECENT_TRAIL - 1);
+            for (int index = firstRecentIndex; index < suffix.size() - 1; index++) {
+                PathStep step = suffix.get(index);
+                if (step == null || step.pos() == null) {
+                    return none();
+                }
+                recentTrail.add(step.pos());
+            }
+            return new ContinuationContext(dx, dz, recentTrail);
+        }
+
+        public boolean constrained() {
+            return approachDx != 0 || approachDz != 0 || !recentTrail.isEmpty();
+        }
+
+        public boolean allows(BlockPos searchStart, BlockPos candidate) {
+            Objects.requireNonNull(searchStart, "searchStart");
+            Objects.requireNonNull(candidate, "candidate");
+            if (recentTrail.contains(candidate)) {
+                return false;
+            }
+            long deltaX = (long) candidate.getX() - searchStart.getX();
+            long deltaZ = (long) candidate.getZ() - searchStart.getZ();
+            return deltaX * approachDx + deltaZ * approachDz >= 0;
+        }
+    }
+
     public record PathPlan(
             BlockPos plannedStart,
             List<PathStep> steps,
             BlockPos plannedEnd,
             PathOutcome outcome,
-            int expandedNodes
+            int expandedNodes,
+            boolean usedRetreatFallback
     ) {
         public PathPlan {
             steps = List.copyOf(steps);
@@ -991,9 +1135,19 @@ public final class LocalPathPlanner {
                 BlockPos plannedStart,
                 List<PathStep> steps,
                 BlockPos plannedEnd,
+                PathOutcome outcome,
+                int expandedNodes
+        ) {
+            this(plannedStart, steps, plannedEnd, outcome, expandedNodes, false);
+        }
+
+        public PathPlan(
+                BlockPos plannedStart,
+                List<PathStep> steps,
+                BlockPos plannedEnd,
                 PathOutcome outcome
         ) {
-            this(plannedStart, steps, plannedEnd, outcome, 0);
+            this(plannedStart, steps, plannedEnd, outcome, 0, false);
         }
 
         boolean isEmpty() {
