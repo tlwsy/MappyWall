@@ -1,5 +1,6 @@
 package dev.mappywall.core;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,6 +27,11 @@ public final class PathSegmentCoordinator<T> {
         WHEN_TERRAIN_READY
     }
 
+    public enum PreviewPolicy {
+        CONTINUOUS,
+        AFTER_PROMOTION
+    }
+
     public record ContinuationCandidate(Anchor seam, ContinuationPolicy policy) {
         public ContinuationCandidate {
             Objects.requireNonNull(seam, "seam");
@@ -38,13 +44,25 @@ public final class PathSegmentCoordinator<T> {
             Anchor end,
             List<T> steps,
             boolean terminal,
-            ContinuationPolicy continuationPolicy
+            ContinuationPolicy continuationPolicy,
+            PreviewPolicy previewPolicy
     ) {
+        public Segment(
+                Anchor start,
+                Anchor end,
+                List<T> steps,
+                boolean terminal,
+                ContinuationPolicy continuationPolicy
+        ) {
+            this(start, end, steps, terminal, continuationPolicy, PreviewPolicy.CONTINUOUS);
+        }
+
         public Segment {
             Objects.requireNonNull(start, "start");
             Objects.requireNonNull(end, "end");
             Objects.requireNonNull(steps, "steps");
             Objects.requireNonNull(continuationPolicy, "continuationPolicy");
+            Objects.requireNonNull(previewPolicy, "previewPolicy");
             steps = List.copyOf(steps);
         }
     }
@@ -181,6 +199,18 @@ public final class PathSegmentCoordinator<T> {
             return List.of();
         }
         return List.copyOf(active.steps().subList(activeStepIndex, active.steps().size()));
+    }
+
+    public List<T> previewStepSnapshot() {
+        List<T> activeRemaining = remainingStepSnapshot();
+        if (buffered == null || buffered.previewPolicy() != PreviewPolicy.CONTINUOUS) {
+            return activeRemaining;
+        }
+
+        List<T> preview = new ArrayList<>(activeRemaining.size() + buffered.steps().size());
+        preview.addAll(activeRemaining);
+        preview.addAll(buffered.steps());
+        return List.copyOf(preview);
     }
 
     public void clear() {

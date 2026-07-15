@@ -10,6 +10,7 @@ import dev.mappywall.core.PathSegmentCoordinator.Anchor;
 import dev.mappywall.core.PathSegmentCoordinator.ContinuationCandidate;
 import dev.mappywall.core.PathSegmentCoordinator.ContinuationPolicy;
 import dev.mappywall.core.PathSegmentCoordinator.LookaheadRequest;
+import dev.mappywall.core.PathSegmentCoordinator.PreviewPolicy;
 import dev.mappywall.core.PathSegmentCoordinator.Segment;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,6 +49,130 @@ class PathSegmentCoordinatorTest {
 
         assertEquals(3, coordinator.currentStep().orElseThrow());
         assertEquals(2, coordinator.remainingSteps());
+    }
+
+    @Test
+    void continuousBufferedSegmentIsIncludedInPreviewBeforePromotion() {
+        coordinator.resetTarget("target-a");
+        coordinator.installInitial(segment(
+                anchor(0),
+                anchor(3),
+                List.of(1, 2, 3),
+                false,
+                ContinuationPolicy.IMMEDIATE
+        ));
+        assertTrue(coordinator.advance());
+        LookaheadRequest request = coordinator.beginLookahead(true, false).orElseThrow();
+        assertTrue(coordinator.acceptLookahead(
+                request,
+                segment(
+                        anchor(3),
+                        anchor(5),
+                        List.of(4, 5),
+                        true,
+                        ContinuationPolicy.NONE,
+                        PreviewPolicy.CONTINUOUS
+                )
+        ));
+
+        List<Integer> preview = coordinator.previewStepSnapshot();
+
+        assertEquals(List.of(2, 3), coordinator.remainingStepSnapshot());
+        assertEquals(List.of(2, 3, 4, 5), preview);
+        assertEquals(2, coordinator.currentStep().orElseThrow());
+        assertTrue(coordinator.hasBuffered());
+        assertThrows(UnsupportedOperationException.class, () -> preview.add(6));
+    }
+
+    @Test
+    void retreatBufferedSegmentIsHiddenUntilPromotion() {
+        coordinator.resetTarget("target-a");
+        coordinator.installInitial(segment(
+                anchor(0),
+                anchor(1),
+                List.of(1),
+                false,
+                ContinuationPolicy.IMMEDIATE
+        ));
+        LookaheadRequest request = coordinator.beginLookahead(true, false).orElseThrow();
+        assertTrue(coordinator.acceptLookahead(
+                request,
+                segment(
+                        anchor(1),
+                        anchor(3),
+                        List.of(2, 3),
+                        true,
+                        ContinuationPolicy.NONE,
+                        PreviewPolicy.AFTER_PROMOTION
+                )
+        ));
+
+        assertEquals(List.of(1), coordinator.previewStepSnapshot());
+        assertEquals(List.of(1), coordinator.remainingStepSnapshot());
+        assertTrue(coordinator.advance());
+        assertTrue(coordinator.previewStepSnapshot().isEmpty());
+
+        assertTrue(coordinator.promoteBuffered());
+        assertEquals(List.of(2, 3), coordinator.previewStepSnapshot());
+        assertEquals(2, coordinator.currentStep().orElseThrow());
+    }
+
+    @Test
+    void targetResetClearsBufferedPreview() {
+        coordinator.resetTarget("target-a");
+        coordinator.installInitial(segment(
+                anchor(0),
+                anchor(1),
+                List.of(1),
+                false,
+                ContinuationPolicy.IMMEDIATE
+        ));
+        assertTrue(coordinator.acceptLookahead(
+                coordinator.beginLookahead(true, false).orElseThrow(),
+                segment(
+                        anchor(1),
+                        anchor(2),
+                        List.of(2),
+                        true,
+                        ContinuationPolicy.NONE,
+                        PreviewPolicy.CONTINUOUS
+                )
+        ));
+        assertEquals(List.of(1, 2), coordinator.previewStepSnapshot());
+
+        coordinator.resetTarget("target-b");
+
+        assertTrue(coordinator.previewStepSnapshot().isEmpty());
+        assertFalse(coordinator.hasBuffered());
+    }
+
+    @Test
+    void clearClearsBufferedPreview() {
+        coordinator.resetTarget("target-a");
+        coordinator.installInitial(segment(
+                anchor(0),
+                anchor(1),
+                List.of(1),
+                false,
+                ContinuationPolicy.IMMEDIATE
+        ));
+        assertTrue(coordinator.acceptLookahead(
+                coordinator.beginLookahead(true, false).orElseThrow(),
+                segment(
+                        anchor(1),
+                        anchor(2),
+                        List.of(2),
+                        true,
+                        ContinuationPolicy.NONE,
+                        PreviewPolicy.CONTINUOUS
+                )
+        ));
+        assertEquals(List.of(1, 2), coordinator.previewStepSnapshot());
+
+        coordinator.clear();
+
+        assertTrue(coordinator.previewStepSnapshot().isEmpty());
+        assertFalse(coordinator.hasBuffered());
     }
 
     @Test
@@ -245,6 +370,7 @@ class PathSegmentCoordinatorTest {
         source.add(3);
 
         assertEquals(List.of(1, 2), segment.steps());
+        assertEquals(PreviewPolicy.CONTINUOUS, segment.previewPolicy());
         assertThrows(UnsupportedOperationException.class, () -> segment.steps().add(4));
     }
 
@@ -264,6 +390,15 @@ class PathSegmentCoordinatorTest {
                 () -> new Segment<>(anchor(0), anchor(1), stepsWithNull, false, ContinuationPolicy.IMMEDIATE));
         assertThrows(NullPointerException.class,
                 () -> new Segment<>(anchor(0), anchor(1), List.of(1), false, null));
+        assertThrows(NullPointerException.class,
+                () -> new Segment<>(
+                        anchor(0),
+                        anchor(1),
+                        List.of(1),
+                        false,
+                        ContinuationPolicy.IMMEDIATE,
+                        null
+                ));
     }
 
     @Test
@@ -369,6 +504,17 @@ class PathSegmentCoordinatorTest {
             ContinuationPolicy continuationPolicy
     ) {
         return new Segment<>(start, end, steps, terminal, continuationPolicy);
+    }
+
+    private static Segment<Integer> segment(
+            Anchor start,
+            Anchor end,
+            List<Integer> steps,
+            boolean terminal,
+            ContinuationPolicy continuationPolicy,
+            PreviewPolicy previewPolicy
+    ) {
+        return new Segment<>(start, end, steps, terminal, continuationPolicy, previewPolicy);
     }
 
     private static List<Integer> range(int first, int lastInclusive) {
