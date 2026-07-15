@@ -20,6 +20,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.BiPredicate;
+import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -128,6 +130,7 @@ public final class MovementController {
     private final AutoNavigationConfig normalConfig = AutoNavigationConfig.defaults();
     private volatile AutoNavigationConfig aggressiveConfig;
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
+    private final NavigationFeetResolver navigationFeetResolver = new NavigationFeetResolver();
     private final InitialPathPlanPreparer initialPathPlanPreparer = new InitialPathPlanPreparer();
     private final PathSegmentCoordinator<LocalPathPlanner.PathStep> pathSegments =
             new PathSegmentCoordinator<>();
@@ -391,7 +394,7 @@ public final class MovementController {
     }
 
     private boolean isAdjacentActionStep(LocalPlayer player, LocalPathPlanner.PathStep step) {
-        return isAdjacentActionStep(player.blockPosition(), step);
+        return isAdjacentActionStep(navigationFeetResolver.resolve(player), step);
     }
 
     private boolean isAdjacentActionStep(BlockPos current, LocalPathPlanner.PathStep step) {
@@ -431,7 +434,7 @@ public final class MovementController {
         BlockPos feet = step.pos();
         BlockPos head = feet.above();
         BlockPos support = feet.below();
-        BlockPos currentFeet = player.blockPosition();
+        BlockPos currentFeet = navigationFeetResolver.resolve(player);
         int edgeX = feet.getX() - currentFeet.getX();
         int edgeZ = feet.getZ() - currentFeet.getZ();
         if (Math.abs(edgeX) > 1 || Math.abs(edgeZ) > 1) {
@@ -462,7 +465,7 @@ public final class MovementController {
         if (!isSafeSolidSupport(client, support)) {
             return false;
         }
-        int verticalDelta = feet.getY() - player.blockPosition().getY();
+        int verticalDelta = feet.getY() - currentFeet.getY();
         return switch (step.action()) {
             case JUMP -> verticalDelta >= 0
                     && verticalDelta <= 1
@@ -1053,7 +1056,7 @@ public final class MovementController {
         LocalPathPlanner.PathStep waypoint
     ) {
         if (!player.isInWater()) {
-            boolean enteringAbove = waypoint.pos().getY() > player.blockPosition().getY();
+            boolean enteringAbove = waypoint.pos().getY() > navigationFeetResolver.resolve(player).getY();
             return moveToward(client, player, waypoint, enteringAbove, false, false);
         }
         double dy = waypoint.pos().getY() + 0.5 - player.getY();
@@ -1839,7 +1842,7 @@ public final class MovementController {
         beginCapture(
                 client,
                 target,
-                client.player.blockPosition(),
+                navigationFeetResolver.resolve(client.player),
                 PlanRequestKind.INITIAL,
                 null,
                 ContinuationContext.none()
@@ -1916,33 +1919,59 @@ public final class MovementController {
                 && request.config().equals(navigationConfig());
     }
 
+    InitialPlanAcceptance evaluateInitialPlanAcceptance(
+            Supplier<BlockPos> actualFeetSupplier,
+            BlockPos requestPlannedStart,
+            LocalPathPlanner.PathPlan plan,
+            BiPredicate<BlockPos, LocalPathPlanner.PathPlan> livePrefixValidator
+    ) {
+        Objects.requireNonNull(actualFeetSupplier, "actualFeetSupplier");
+        Objects.requireNonNull(requestPlannedStart, "requestPlannedStart");
+        Objects.requireNonNull(plan, "plan");
+        Objects.requireNonNull(livePrefixValidator, "livePrefixValidator");
+
+        BlockPos actualFeet = Objects.requireNonNull(actualFeetSupplier.get(), "actualFeet");
+        boolean startStillCurrent = requestPlannedStart
+                .distSqr(actualFeet) <= MAX_PLAN_START_DRIFT_SQR;
+        if (!startStillCurrent) {
+            return InitialPlanAcceptance.rejected(PlanningFailure.LIVE_INVALIDATED);
+        }
+        if (!plan.isExecutable()) {
+            return InitialPlanAcceptance.rejected(PlanningFailure.INVALID_PLAN);
+        }
+
+        InitialPathPlanPreparer.PreparedInitialPath prepared = initialPathPlanPreparer
+                .prepare(actualFeet, plan)
+                .orElse(null);
+        if (prepared == null
+                || !livePrefixValidator.test(actualFeet, prepared.plan())) {
+            return InitialPlanAcceptance.rejected(PlanningFailure.INITIAL_PREFIX);
+        }
+        return InitialPlanAcceptance.accepted(prepared.plan());
+    }
+
     private void acceptInitialPlan(
             Minecraft client,
             LocalPlayer player,
             PlanningRequest request,
             LocalPathPlanner.PathPlan plan
     ) {
-        boolean startStillCurrent = request.plannedStart()
-                .distSqr(player.blockPosition()) <= MAX_PLAN_START_DRIFT_SQR;
-        if (!startStillCurrent) {
-            rejectPlanningRequest(request, PlanningFailure.LIVE_INVALIDATED);
-            return;
-        }
-        if (!plan.isExecutable()) {
-            rejectPlanningRequest(request, PlanningFailure.INVALID_PLAN);
-            return;
-        }
-
-        InitialPathPlanPreparer.PreparedInitialPath prepared = initialPathPlanPreparer
-                .prepare(player.blockPosition(), plan)
-                .orElse(null);
-        if (prepared == null
-                || !isInitialPathPrefixLiveSafe(client, player.blockPosition(), prepared.plan())) {
-            rejectPlanningRequest(request, PlanningFailure.INITIAL_PREFIX);
+        InitialPlanAcceptance acceptance = evaluateInitialPlanAcceptance(
+                () -> navigationFeetResolver.resolve(player),
+                request.plannedStart(),
+                plan,
+                (actualFeet, preparedPlan) -> isInitialPathPrefixLiveSafe(
+                        client,
+                        actualFeet,
+                        preparedPlan
+                )
+        );
+        if (acceptance.failure() != null) {
+            rejectPlanningRequest(request, acceptance.failure());
             return;
         }
 
-        pathSegments.installInitial(toSegment(prepared.plan()));
+        pathSegments.installInitial(toSegment(acceptance.plan()));
         currentStepOrdinal = 0;
         planningRetry.onSuccess();
         breakingBlock = null;
@@ -2840,7 +2869,7 @@ public final class MovementController {
     }
 
     private BlockPos navigationTarget(LocalPlayer player, RouteStep target) {
-        return navigationTarget(player.blockPosition(), target);
+        return navigationTarget(navigationFeetResolver.resolve(player), target);
     }
 
     private BlockPos navigationTarget(BlockPos origin, RouteStep target) {
@@ -2873,13 +2902,26 @@ public final class MovementController {
         LOOKAHEAD
     }
 
-    private enum PlanningFailure {
+    enum PlanningFailure {
         STALE,
         LIVE_INVALIDATED,
         NO_PATH,
         NODE_LIMIT,
         INVALID_PLAN,
         INITIAL_PREFIX
+    }
+
+    record InitialPlanAcceptance(
+            LocalPathPlanner.PathPlan plan,
+            PlanningFailure failure
+    ) {
+        static InitialPlanAcceptance accepted(LocalPathPlanner.PathPlan plan) {
+            return new InitialPlanAcceptance(Objects.requireNonNull(plan, "plan"), null);
+        }
+
+        static InitialPlanAcceptance rejected(PlanningFailure failure) {
+            return new InitialPlanAcceptance(null, Objects.requireNonNull(failure, "failure"));
+        }
     }
 
     private record PlanningRequest(

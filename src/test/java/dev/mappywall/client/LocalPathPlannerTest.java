@@ -37,6 +37,22 @@ class LocalPathPlannerTest {
     }
 
     @Test
+    void normalizedSnapshotStartKeepsFlatFirstWalkAtLogicalFeetY() {
+        BlockPos start = new BlockPos(0, 64, 0);
+
+        PathPlan plan = planner.plan(
+                new TestTerrain().flatSurface(63).snapshot(start),
+                routeTo(8, 0),
+                config()
+        );
+
+        assertEquals(start, plan.plannedStart());
+        assertFalse(plan.steps().isEmpty());
+        assertEquals(StepAction.WALK, plan.steps().getFirst().action());
+        assertEquals(64, plan.steps().getFirst().pos().getY());
+    }
+
+    @Test
     void continuationContextKeepsOnlyEightPreSeamNodesAndEntryDirection() {
         ArrayList<PathStep> suffix = new ArrayList<>();
         for (int x = 0; x <= 10; x++) {

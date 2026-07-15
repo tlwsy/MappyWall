@@ -1,14 +1,118 @@
 package dev.mappywall.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.Test;
 
 class InitialPathPlanPreparerTest {
     private final InitialPathPlanPreparer preparer = new InitialPathPlanPreparer();
+    private final MovementController controller = new MovementController();
+
+    @Test
+    void initialAcceptanceResolvesOnceAndReusesNormalizedFeet() {
+        AtomicInteger resolutions = new AtomicInteger();
+        BlockPos actualFeet = new BlockPos(0, 64, 0);
+        LocalPathPlanner.PathPlan plan = plan(List.of(walk(1)));
+
+        MovementController.InitialPlanAcceptance acceptance = controller.evaluateInitialPlanAcceptance(
+                () -> {
+                    resolutions.incrementAndGet();
+                    return actualFeet;
+                },
+                plan.plannedStart(),
+                plan,
+                (validatedFeet, preparedPlan) -> {
+                    assertSame(actualFeet, validatedFeet);
+                    assertSame(actualFeet, preparedPlan.plannedStart());
+                    return true;
+                }
+        );
+
+        assertEquals(1, resolutions.get());
+        assertNull(acceptance.failure());
+        assertSame(actualFeet, acceptance.plan().plannedStart());
+        assertEquals(LocalPathPlanner.StepAction.WALK, acceptance.plan().steps().getFirst().action());
+        assertEquals(new BlockPos(1, 64, 0), acceptance.plan().steps().getFirst().pos());
+    }
+
+    @Test
+    void initialAcceptanceClassifiesRawPartialBlockFeetAsInvalidPrefix() {
+        LocalPathPlanner.PathPlan plan = plan(List.of(walk(1)));
+
+        MovementController.InitialPlanAcceptance acceptance = controller.evaluateInitialPlanAcceptance(
+                () -> new BlockPos(0, 63, 0),
+                plan.plannedStart(),
+                plan,
+                (ignoredFeet, ignoredPlan) -> {
+                    throw new AssertionError("rejected preparation must not reach live validation");
+                }
+        );
+
+        assertEquals(MovementController.PlanningFailure.INITIAL_PREFIX, acceptance.failure());
+        assertNull(acceptance.plan());
+    }
+
+    @Test
+    void initialAcceptanceClassifiesRequestDriftAsLiveInvalidated() {
+        LocalPathPlanner.PathPlan plan = plan(List.of(walk(1)));
+
+        MovementController.InitialPlanAcceptance acceptance = controller.evaluateInitialPlanAcceptance(
+                () -> new BlockPos(0, 66, 0),
+                plan.plannedStart(),
+                plan,
+                (ignoredFeet, ignoredPlan) -> {
+                    throw new AssertionError("drift must short-circuit prefix validation");
+                }
+        );
+
+        assertEquals(MovementController.PlanningFailure.LIVE_INVALIDATED, acceptance.failure());
+        assertNull(acceptance.plan());
+    }
+
+    @Test
+    void initialAcceptanceClassifiesRejectedLivePrefixAsInvalidPrefix() {
+        LocalPathPlanner.PathPlan plan = plan(List.of(walk(1)));
+
+        MovementController.InitialPlanAcceptance acceptance = controller.evaluateInitialPlanAcceptance(
+                () -> new BlockPos(0, 64, 0),
+                plan.plannedStart(),
+                plan,
+                (ignoredFeet, ignoredPlan) -> false
+        );
+
+        assertEquals(MovementController.PlanningFailure.INITIAL_PREFIX, acceptance.failure());
+        assertNull(acceptance.plan());
+    }
+
+    @Test
+    void initialAcceptanceKeepsNonExecutablePlanClassification() {
+        BlockPos start = new BlockPos(0, 64, 0);
+        LocalPathPlanner.PathPlan plan = new LocalPathPlanner.PathPlan(
+                start,
+                List.of(),
+                start,
+                LocalPathPlanner.PathOutcome.NO_PATH,
+                0
+        );
+
+        MovementController.InitialPlanAcceptance acceptance = controller.evaluateInitialPlanAcceptance(
+                () -> start,
+                start,
+                plan,
+                (ignoredFeet, ignoredPlan) -> {
+                    throw new AssertionError("invalid plan must short-circuit prefix validation");
+                }
+        );
+
+        assertEquals(MovementController.PlanningFailure.INVALID_PLAN, acceptance.failure());
+        assertNull(acceptance.plan());
+    }
 
     @Test
     void trimsConsumedMovementPrefixAndRebasesPlan() {

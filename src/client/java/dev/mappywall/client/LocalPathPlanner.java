@@ -18,6 +18,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 
 public final class LocalPathPlanner {
+    private static final NavigationFeetResolver NAVIGATION_FEET_RESOLVER = new NavigationFeetResolver();
     private static final int MAX_NODES = 4500;
     static final int MAX_HORIZONTAL_RANGE = 28;
     static final int MAX_VERTICAL_RANGE = 8;
@@ -1204,7 +1205,7 @@ public final class LocalPathPlanner {
         static NavigationSnapshot capture(LocalPlayer player) {
             NavigationSnapshotCapture capture = new NavigationSnapshotCapture(
                     player.level(),
-                    player.blockPosition()
+                    NAVIGATION_FEET_RESOLVER.resolve(player)
             );
             capture.advance(Integer.MAX_VALUE);
             return capture.finish();
