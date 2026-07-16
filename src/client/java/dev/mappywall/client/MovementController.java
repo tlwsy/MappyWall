@@ -21,6 +21,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.BiPredicate;
+import java.util.function.DoubleSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -2092,21 +2094,67 @@ public final class MovementController {
         double dx = pos.getX() + 0.5 - player.getX();
         double dz = pos.getZ() + 0.5 - player.getZ();
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
-        double yError = player.getY() - pos.getY();
-        return switch (step.action()) {
+        return evaluateWaypointCompletion(
+                step.action(),
+                horizontalDistance,
+                player.getY(),
+                pos.getY(),
+                player.onGround(),
+                player.isInWater(),
+                player.getVehicle() instanceof AbstractBoat,
+                () -> navigationFeetResolver.resolveWaypointY(player)
+        );
+    }
+
+    static boolean evaluateWaypointCompletion(
+            LocalPathPlanner.StepAction action,
+            double horizontalDistance,
+            double physicalFeetY,
+            int targetY,
+            boolean onGround,
+            boolean inWater,
+            boolean inBoat,
+            DoubleSupplier selectedMovementYResolver
+    ) {
+        double selectedMovementY = selectedMovementYResolver.getAsDouble();
+        return isWaypointComplete(
+                action,
+                horizontalDistance,
+                physicalFeetY,
+                selectedMovementY,
+                targetY,
+                onGround,
+                inWater,
+                inBoat
+        );
+    }
+
+    static boolean isWaypointComplete(
+            LocalPathPlanner.StepAction action,
+            double horizontalDistance,
+            double physicalFeetY,
+            double selectedMovementY,
+            int targetY,
+            boolean onGround,
+            boolean inWater,
+            boolean inBoat
+    ) {
+        double movementYError = selectedMovementY - targetY;
+        double physicalYError = physicalFeetY - targetY;
+        return switch (action) {
             case WALK -> horizontalDistance <= WALK_WAYPOINT_DISTANCE_BLOCKS
-                    && Math.abs(yError) <= 0.60
-                    && (player.onGround() || player.isInWater());
+                    && Math.abs(movementYError) <= 0.60
+                    && (onGround || inWater);
             case JUMP -> horizontalDistance <= JUMP_WAYPOINT_DISTANCE_BLOCKS
-                    && yError >= -0.15
-                    && yError <= 0.70
-                    && player.onGround();
+                    && movementYError >= -0.15
+                    && movementYError <= 0.70
+                    && onGround;
             case DROP -> horizontalDistance <= DROP_WAYPOINT_DISTANCE_BLOCKS
-                    && Math.abs(yError) <= 0.65
-                    && (player.onGround() || player.isInWater());
+                    && Math.abs(movementYError) <= 0.65
+                    && (onGround || inWater);
             case SWIM -> horizontalDistance <= SWIM_WAYPOINT_DISTANCE_BLOCKS
-                    && Math.abs(yError) <= 1.25
-                    && (player.isInWater() || player.getVehicle() instanceof AbstractBoat);
+                    && Math.abs(physicalYError) <= 1.25
+                    && (inWater || inBoat);
             case BREAK, PLACE -> false;
         };
     }
@@ -2607,13 +2655,30 @@ public final class MovementController {
         if (!(entity instanceof LocalPlayer player) || player.isInWater() || !player.onGround()) {
             return true;
         }
-        BlockPos projectedFeet = BlockPos.containing(
+        return isProjectedSupportSafe(
                 entity.getX() + velocityX,
-                entity.getY(),
-                entity.getZ() + velocityZ
+                entity.getZ() + velocityZ,
+                (x, z) -> navigationFeetResolver.resolveProjected(player, x, z),
+                feet -> isLiveBodyClear(client, feet),
+                support -> isSafeSolidSupport(client, support)
         );
-        return isLiveBodyClear(client, projectedFeet)
-                && isSafeSolidSupport(client, projectedFeet.below());
+    }
+
+    static boolean isProjectedSupportSafe(
+            double projectedX,
+            double projectedZ,
+            ProjectedFeetResolver feetResolver,
+            Predicate<BlockPos> isBodyClear,
+            Predicate<BlockPos> isSafeSupport
+    ) {
+        BlockPos projectedFeet = feetResolver.resolve(projectedX, projectedZ);
+        return isBodyClear.test(projectedFeet)
+                && isSafeSupport.test(projectedFeet.below());
+    }
+
+    @FunctionalInterface
+    interface ProjectedFeetResolver {
+        BlockPos resolve(double x, double z);
     }
 
     private void setDirectMovementState(LocalPlayer player, boolean sprint) {
