@@ -79,6 +79,8 @@ Eligibility is latched for the current continuous water run. Advancing far enoug
 
 The existing pre-execution boat-to-land decision must reuse the same resolved boatable-surface classification. A mounted boat following a submerged `SWIM` waypoint remains in boat control when that waypoint's column resolves to the compatible water surface. It must not call the old exact-cell `isSurfaceWaterRoute()` test and immediately dismount merely because the planner waypoint is below the top water block. A `SWIM` column that cannot resolve to a boatable continuation may still begin the existing bounded dismount transition.
 
+Mounted waypoint completion must reuse that resolution as well. A boat at the resolved surface completes the submerged `SWIM` waypoint using the existing horizontal distance threshold and the resolved compatible surface, rather than comparing the boat rider's physical Y with the submerged planner cell. A player who is swimming without a boat retains the existing physical-Y completion rule and tolerance. This prevents a correctly acquired surface boat from remaining forever on the first deep-water waypoint.
+
 Short water runs neither board a nearby empty boat nor place a carried boat.
 
 ## Design 3: Confirmed boat acquisition
@@ -143,6 +145,7 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 - an accepted continuous buffer can complete the 12-block proof, while pending and hidden-retreat work cannot;
 - completed confirmed water distance is accumulated exactly once, combines with later rolling lookahead, and survives an ordinary compatible same-target replan;
 - eligibility remains latched after the remaining suffix becomes shorter than 12 and resets at the water-run boundary;
+- a mounted boat completes a submerged `SWIM` waypoint through its compatible resolved surface, while an unmounted swimmer retains physical-Y completion semantics;
 - short water runs do not board existing boats.
 
 ### Acquisition
