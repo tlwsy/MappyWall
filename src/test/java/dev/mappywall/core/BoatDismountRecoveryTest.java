@@ -306,6 +306,26 @@ class BoatDismountRecoveryTest {
     }
 
     @Test
+    void terminalAndCancelOutcomesRetainTheExactSuppressionRemainder() {
+        BoatDismountRecovery completed = begunRecovery();
+        assertEquals(HOLD, completed.tick(detachedClearBlock(true)));
+        assertEquals(HOLD, completed.tick(detachedClearBlock(false)));
+        assertEquals(COMPLETE_REPLAN, completed.tick(detachedClearBlock(false)));
+        assertEquals(57, ticksUntilBoardingAllowed(completed));
+
+        BoatDismountRecovery failed = begunRecovery();
+        assertEquals(FAILED, failed.tick(ridingDifferentVehicle()));
+        assertEquals(59, ticksUntilBoardingAllowed(failed));
+
+        BoatDismountRecovery cancelled = begunRecovery();
+        for (int tick = 0; tick < 5; tick++) {
+            cancelled.tick(ridingOriginalBoat());
+        }
+        cancelled.cancel();
+        assertEquals(55, ticksUntilBoardingAllowed(cancelled));
+    }
+
+    @Test
     void timeoutFailsInsteadOfRestarting() {
         BoatDismountRecovery recovery = begunRecovery();
         Observation blocked = detachedTouching(true, false, false);
@@ -317,6 +337,23 @@ class BoatDismountRecoveryTest {
         assertFalse(recovery.active());
         assertEquals(IDLE, recovery.phase());
         assertEquals(NONE, recovery.tick(blocked));
+    }
+
+    @Test
+    void timeoutWinsOverBothARequestAndAnOtherwiseCompletingTick() {
+        BoatDismountRecovery requesting = begunRecovery();
+        for (int tick = 1; tick < 100; tick++) {
+            requesting.tick(ridingOriginalBoat());
+        }
+        assertEquals(FAILED, requesting.tick(ridingOriginalBoat()));
+
+        BoatDismountRecovery settling = begunRecovery();
+        for (int tick = 1; tick <= 97; tick++) {
+            settling.tick(detachedClearUnstable());
+        }
+        assertEquals(HOLD, settling.tick(detachedClearBlock(false)));
+        assertEquals(HOLD, settling.tick(detachedClearBlock(false)));
+        assertEquals(FAILED, settling.tick(detachedClearBlock(false)));
     }
 
     @Test
@@ -351,6 +388,16 @@ class BoatDismountRecoveryTest {
         BoatDismountRecovery recovery = new BoatDismountRecovery();
         recovery.begin(BOAT_ID, 1.25, 64.0, -2.75);
         return recovery;
+    }
+
+    private static int ticksUntilBoardingAllowed(BoatDismountRecovery recovery) {
+        int ticks = 0;
+        while (recovery.suppressBoarding(BOAT_ID)) {
+            recovery.tick(detachedClearUnstable());
+            ticks++;
+            assertTrue(ticks <= 60);
+        }
+        return ticks;
     }
 
     private static Observation ridingOriginalBoat() {

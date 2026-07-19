@@ -753,6 +753,7 @@ public final class MappyWallRuntime {
         }
 
         boolean automatic = activeSave.project().mode().isAutomatic();
+        boolean autoWalk = activeSave.project().mode() == RunMode.AUTO_WALK;
         boolean aggressive = automatic
                 && activeSave.project().automationStyle() == AutomationStyle.AGGRESSIVE;
         if (automatic && !aggressive && client.gui.screen() != null) {
@@ -838,18 +839,37 @@ public final class MappyWallRuntime {
         boolean stagingMapOpen = automatic
                 && openTarget != null
                 && mapOpenController.canOpenAtCurrentPosition(client, openTarget);
-        if (automatic && (reachedFillTarget || stagingMapOpen)) {
-            movementController.release(client);
-            movementPath = List.of();
-        } else if (automatic) {
+        boolean passenger = client.player != null && client.player.isPassenger();
+        boolean recoveringDismount = movementController.isDismountRecovering();
+        // Sample before controller.tick: a COMPLETE outcome still defers this
+        // reached action once, then the next ordinary tick may handle it.
+        MovementControlDecision movementDecision = movementControlDecision(
+                automatic,
+                autoWalk,
+                movementTarget != null,
+                passenger,
+                recoveringDismount,
+                reachedFillTarget,
+                stagingMapOpen
+        );
+        boolean deferTargetAction = movementDecision.deferTargetAction();
+        if (movementDecision.serviceMovement()) {
             MovementController.MovementResult movement = movementController.tick(client, activeSave, movementTarget);
             movementPath = movement.path();
             if (movement.shouldPause()) {
                 pauseActiveProject(client, movement.pauseMessage(), ChatFormatting.YELLOW);
                 return;
             }
+        } else if (movementDecision.releaseMovement()) {
+            movementController.release(client);
+            movementPath = List.of();
         } else {
             movementPath = List.of();
+        }
+
+        if (deferTargetAction) {
+            periodicSave(client);
+            return;
         }
 
         if (reachedFillTarget && handleReachedFillTarget(client, fillStep)) {
@@ -1054,6 +1074,42 @@ public final class MappyWallRuntime {
     private boolean reachedFillTarget(Minecraft client, RouteStep target) {
         return client.player != null
                 && target.targetBlock().distanceSquaredTo(client.player.getX(), client.player.getZ()) <= 16.0;
+    }
+
+    static MovementControlDecision movementControlDecision(
+            boolean automatic,
+            boolean autoWalk,
+            boolean hasMovementTarget,
+            boolean passenger,
+            boolean recoveringDismount,
+            boolean reachedFillTarget,
+            boolean stagingMapOpen
+    ) {
+        if (!hasMovementTarget) {
+            return new MovementControlDecision(false, false, automatic || recoveringDismount);
+        }
+        if (!automatic) {
+            return new MovementControlDecision(false, false, recoveringDismount);
+        }
+
+        boolean deferTargetAction = autoWalk && (passenger || recoveringDismount);
+        boolean serviceMovement = deferTargetAction || (!reachedFillTarget && !stagingMapOpen);
+        return new MovementControlDecision(serviceMovement, deferTargetAction, !serviceMovement);
+    }
+
+    record MovementControlDecision(
+            boolean serviceMovement,
+            boolean deferTargetAction,
+            boolean releaseMovement
+    ) {
+        MovementControlDecision {
+            if (serviceMovement && releaseMovement) {
+                throw new IllegalArgumentException("movement cannot be serviced and released together");
+            }
+            if (deferTargetAction && !serviceMovement) {
+                throw new IllegalArgumentException("deferred target action requires movement service");
+            }
+        }
     }
 
     private RouteStep nextFillStepForRun(MapWallSave save) {

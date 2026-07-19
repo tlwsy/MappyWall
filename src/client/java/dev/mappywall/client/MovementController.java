@@ -2,6 +2,10 @@ package dev.mappywall.client;
 
 import dev.mappywall.client.LocalPathPlanner.ContinuationContext;
 import dev.mappywall.core.AutomationStyle;
+import dev.mappywall.core.BoatDismountRecovery;
+import dev.mappywall.core.BoatDismountRecovery.Action;
+import dev.mappywall.core.BoatDismountRecovery.Observation;
+import dev.mappywall.core.BoatDismountRecovery.RequestPosition;
 import dev.mappywall.core.MapWallSave;
 import dev.mappywall.core.NavigationPlanningCadence;
 import dev.mappywall.core.NavigationPlanningRetryState;
@@ -40,6 +44,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
 import net.minecraft.world.food.FoodProperties;
@@ -86,6 +91,9 @@ public final class MovementController {
     private static final double ELYTRA_STEEP_CLIMB_ANGLE = 48.0;
     private static final double STUCK_EPSILON = 0.06;
     private static final double PLAYER_MOVE_EPSILON = 0.015;
+    private static final double DISMOUNT_POSITION_EPSILON_SQR = 1.0E-4;
+    private static final double VEHICLE_CONTACT_INFLATION = 1.0E-3;
+    private static final double EGRESS_PROGRESS_EPSILON = 0.01;
     private static final int STUCK_TICKS_LIMIT = 90;
     private static final int COLLISION_REPLAN_TICKS = 8;
     private static final int MAX_MOVEMENT_RECOVERY_FAILURES = 12;
@@ -123,6 +131,9 @@ public final class MovementController {
     );
     private static final NavigationPlanningCadence PLANNING_CADENCE =
             NavigationPlanningCadence.defaults();
+    private static final Observation INACTIVE_DISMOUNT_OBSERVATION = new Observation(
+            false, false, false, false, false, false, false, false, false
+    );
     private static final ExecutorService PATH_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "MappyWall Path Planner");
         thread.setDaemon(true);
@@ -133,6 +144,8 @@ public final class MovementController {
     private volatile AutoNavigationConfig aggressiveConfig;
     private final LocalPathPlanner pathPlanner = new LocalPathPlanner();
     private final NavigationFeetResolver navigationFeetResolver = new NavigationFeetResolver();
+    private final BoatDismountRecovery dismountRecovery = new BoatDismountRecovery();
+    private final BoatEgressSelector boatEgressSelector = new BoatEgressSelector();
     private final InitialPathPlanPreparer initialPathPlanPreparer = new InitialPathPlanPreparer();
     private final PathSegmentCoordinator<LocalPathPlanner.PathStep> pathSegments =
             new PathSegmentCoordinator<>();
@@ -149,7 +162,6 @@ public final class MovementController {
     private int eatCooldown;
     private int elytraStartCooldown;
     private int fireworkCooldown;
-    private int dismountCooldown;
     private double lastDistance = Double.MAX_VALUE;
     private double lastWaypointDistance = Double.MAX_VALUE;
     private Vec3 lastPlayerPos = Vec3.ZERO;
@@ -178,6 +190,8 @@ public final class MovementController {
     private boolean dropCommitted;
     private boolean eatingSession;
     private int movementSampleTick;
+    private BlockPos dismountEgress;
+    private double lastDismountEgressDistance = Double.POSITIVE_INFINITY;
 
     public MovementController() {
         this(AutoNavigationConfig.aggressiveDefaults());
@@ -204,6 +218,7 @@ public final class MovementController {
         waitingForChunk = false;
         resetBreakBudgetIfTargetChanged(target);
         if (save.project().mode() == RunMode.AUTO_ELYTRA) {
+            cancelDismountRecoveryForModeChange();
             return tickElytra(client, save, target);
         }
 
@@ -215,9 +230,21 @@ public final class MovementController {
 
         LocalPlayer player = client.player;
         handleNavigationTargetChange(target);
+        boolean recoveryWasActive = dismountRecovery.active();
+        // Boarding suppression advances only on actual AUTO_WALK controller ticks.
+        // Runtime target handling can freeze this clock safely because it cannot
+        // attempt automatic boat boarding while the controller is not serviced.
+        Action recoveryAction = dismountRecovery.tick(recoveryWasActive
+                ? observeVehicleDismountRecovery(client, player, target)
+                : INACTIVE_DISMOUNT_OBSERVATION);
+        if (recoveryWasActive) {
+            return serviceDismountRecovery(client, player, target, recoveryAction);
+        }
         planningRetry.beginTick();
         if (arrivedAtNavigationTarget(player, target)) {
-            if (player.isPassenger() && tryDismountVehicle(client, player)) {
+            if (shouldBeginVehicleDismountAtArrival(
+                            player.isPassenger(), player.getVehicle() != null)
+                    && beginVehicleDismountRecovery(client, player)) {
                 return MovementResult.active(pathSnapshot());
             }
             release(client);
@@ -239,10 +266,10 @@ public final class MovementController {
         startEligibleLookahead(client, target);
         startInitialCaptureIfNeeded(client, target);
 
-        if (tryEat(client, player)) {
-            return MovementResult.active(pathSnapshot());
-        }
-
+        // Retire only already-reached path cells before deciding whether this is
+        // the boat-to-land seam. This lets consecutive SWIM cells expose the first
+        // non-SWIM step, but no step execution, progress, or stall work runs before
+        // recovery begins and clears the path.
         LocalPathPlanner.PathStep waypoint = nextWaypoint(player);
         startEligibleLookahead(client, target);
         startInitialCaptureIfNeeded(client, target);
@@ -258,6 +285,25 @@ public final class MovementController {
                 resetProgress();
                 return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_no_path"));
             }
+            return MovementResult.active(pathSnapshot());
+        }
+
+        boolean swimWaypoint = waypoint.action() == LocalPathPlanner.StepAction.SWIM;
+        boolean vehiclePresent = player.getVehicle() != null;
+        boolean vehicleIsBoat = player.getVehicle() instanceof AbstractBoat;
+        boolean surfaceWaterRoute = swimWaypoint && isSurfaceWaterRoute(client, waypoint.pos());
+        if (shouldBeginVehicleDismountForWaypoint(
+                        player.isPassenger(),
+                        vehiclePresent,
+                        swimWaypoint,
+                        vehicleIsBoat,
+                        surfaceWaterRoute
+                )
+                && beginVehicleDismountRecovery(client, player)) {
+            return MovementResult.active(pathSnapshot());
+        }
+
+        if (tryEat(client, player)) {
             return MovementResult.active(pathSnapshot());
         }
 
@@ -288,11 +334,6 @@ public final class MovementController {
                 resetProgress();
                 return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_stuck"));
             }
-            return MovementResult.active(pathSnapshot());
-        }
-
-        if (player.isPassenger() && waypoint.action() != LocalPathPlanner.StepAction.SWIM
-                && tryDismountVehicle(client, player)) {
             return MovementResult.active(pathSnapshot());
         }
 
@@ -329,6 +370,8 @@ public final class MovementController {
         currentStepOrdinal = 0;
         planningRetry.forceFreshSnapshot();
         consecutiveNoPathFailures = 0;
+        dismountRecovery.cancel();
+        resetDismountEgressProgress(null, null);
     }
 
     public void hardReset(Minecraft client) {
@@ -344,6 +387,8 @@ public final class MovementController {
             sendBoatPaddles(client, false, false, true);
         }
         resetProgress();
+        dismountRecovery.reset();
+        resetDismountEgressProgress(null, null);
     }
 
     public boolean isWaitingForChunk() {
@@ -352,6 +397,10 @@ public final class MovementController {
 
     public boolean isPlanningPath() {
         return pendingCapture != null || pendingPlan != null;
+    }
+
+    public boolean isDismountRecovering() {
+        return dismountRecovery.active();
     }
 
     private AutoNavigationConfig navigationConfig() {
@@ -1025,12 +1074,6 @@ public final class MovementController {
         if (player.isPassenger()) {
             Entity vehicle = player.getVehicle();
             if (vehicle instanceof AbstractBoat boat) {
-                if (!surfaceRoute) {
-                    if (!tryDismountVehicle(client, player)) {
-                        stopMovement(client);
-                    }
-                    return MovementResult.active(pathSnapshot());
-                }
                 return driveBoatToward(client, player, boat, waypoint, style);
             }
         } else {
@@ -1555,6 +1598,7 @@ public final class MovementController {
                 AbstractBoat.class,
                 searchBox,
                 boat -> boat.isAlive()
+                        && shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)
                         && boat.getPassengers().isEmpty()
                         && player.getEyePosition().distanceToSqr(boat.position())
                                 <= BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
@@ -2500,7 +2544,18 @@ public final class MovementController {
 
     private void releaseMovementKeys(Minecraft client) {
         clearVanillaMovementKeys(client);
+        if (client.player != null) {
+            client.player.input.keyPresses = releasedPlayerInput(
+                    lastDirectInput.equals(DirectInput.NEUTRAL),
+                    client.player.input.keyPresses
+            );
+        }
         sendNeutralInput(client, false);
+    }
+
+    static Input releasedPlayerInput(boolean cachedNeutral, Input currentInput) {
+        Objects.requireNonNull(currentInput, "currentInput");
+        return Input.EMPTY;
     }
 
     private void clearVanillaMovementKeys(Minecraft client) {
@@ -2700,21 +2755,399 @@ public final class MovementController {
         directSprintHeld = false;
     }
 
-    private boolean tryDismountVehicle(Minecraft client, LocalPlayer player) {
-        if (!player.isPassenger() || dismountCooldown > 0) {
+    private void cancelDismountRecoveryForModeChange() {
+        dismountRecovery.cancel();
+        resetDismountEgressProgress(null, null);
+    }
+
+    private boolean beginVehicleDismountRecovery(Minecraft client, LocalPlayer player) {
+        Entity vehicle = player.getVehicle();
+        if (vehicle == null) {
             return false;
         }
+
+        DismountLifecycleEffects effects = dismountLifecycleEffects(true, Action.NONE, true);
+        dismountRecovery.begin(vehicle.getId(), player.getX(), player.getY(), player.getZ());
+        if (effects.clearPlanning()) {
+            clearPlanningForRecovery();
+        }
+        resetDismountEgressProgress(null, null);
         releaseVehicleControls(client);
-        releaseMovementKeys(client);
+        releaseDirectMovementState(client);
         releaseUseKey(client);
+        clearVanillaMovementKeys(client);
+        Vec3 velocity = player.getDeltaMovement();
+        player.setDeltaMovement(0.0, velocity.y, 0.0);
+        keepDismountShiftLocally(client, player);
+        return effects.returnImmediately();
+    }
+
+    private MovementResult serviceDismountRecovery(
+            Minecraft client,
+            LocalPlayer player,
+            RouteStep target,
+            Action action
+    ) {
+        DismountLifecycleEffects effects = dismountLifecycleEffects(false, action, player.isPassenger());
+        switch (effects.inputMode()) {
+            case REQUEST_SHIFT -> requestServerDismount(client, player);
+            case KEEP_SHIFT -> keepDismountShiftLocally(client, player);
+            case NEUTRAL -> {
+                if (effects.motion() == DismountMotion.NONE) {
+                    stopMovement(client);
+                    releaseUseKey(client);
+                } else {
+                    prepareDismountMotion(client);
+                }
+            }
+        }
+
+        if (effects.motion() == DismountMotion.STEER) {
+            BlockPos egress = revalidateDismountEgress(client, player, target);
+            if (egress != null) {
+                moveToward(
+                        client,
+                        player,
+                        new LocalPathPlanner.PathStep(egress, LocalPathPlanner.StepAction.WALK, null),
+                        false
+                );
+            } else {
+                sendNeutralInput(client, false);
+            }
+        } else if (effects.motion() == DismountMotion.JUMP) {
+            BlockPos egress = revalidateDismountEgress(client, player, target);
+            if (egress != null) {
+                moveToward(
+                        client,
+                        player,
+                        new LocalPathPlanner.PathStep(egress, LocalPathPlanner.StepAction.JUMP, null),
+                        true
+                );
+            } else {
+                sendNeutralInput(client, false);
+            }
+        }
+
+        if (effects.freshReplan() || effects.pauseStuck()) {
+            resetDismountEgressProgress(null, null);
+        }
+        DismountTerminalOutcome terminalOutcome =
+                applyDismountTerminalEffects(effects, this::forceLocalReplan);
+        if (terminalOutcome.pauseStuck()) {
+            return MovementResult.pause(Component.translatable("message.mappywall.auto_walk_stuck"));
+        }
+        return MovementResult.active(pathSnapshot());
+    }
+
+    private void prepareDismountMotion(Minecraft client) {
+        releaseVehicleControls(client);
+        releaseDirectMovementState(client);
+        releaseUseKey(client);
+        clearVanillaMovementKeys(client);
+        if (client.player != null) {
+            client.player.input.keyPresses = Input.EMPTY;
+        }
+    }
+
+    private void requestServerDismount(Minecraft client, LocalPlayer player) {
+        releaseVehicleControls(client);
+        releaseDirectMovementState(client);
+        releaseUseKey(client);
+        clearVanillaMovementKeys(client);
         sendPlayerInput(client, false, false, false, false, false, true, false);
         if (client.options != null) {
             client.options.keyShift.setDown(true);
             movementKeysHeld = true;
         }
-        player.stopRiding();
-        dismountCooldown = 10;
-        return true;
+    }
+
+    private void keepDismountShiftLocally(Minecraft client, LocalPlayer player) {
+        releaseVehicleControls(client);
+        releaseDirectMovementState(client);
+        releaseUseKey(client);
+        clearVanillaMovementKeys(client);
+        player.input.keyPresses = new Input(false, false, false, false, false, true, false);
+        if (client.options != null) {
+            client.options.keyShift.setDown(true);
+            movementKeysHeld = true;
+        }
+    }
+
+    private Observation observeVehicleDismountRecovery(
+            Minecraft client,
+            LocalPlayer player,
+            RouteStep target
+    ) {
+        Entity originalVehicle = client.level == null
+                ? null
+                : client.level.getEntity(dismountRecovery.originalBoatEntityId());
+        boolean passenger = player.isPassenger();
+        boolean ridingOriginalVehicle = passenger
+                && player.getVehicle() != null
+                && player.getVehicle().getId() == dismountRecovery.originalBoatEntityId();
+        boolean originalVehiclePresent = originalVehicle != null && originalVehicle.isAlive();
+        boolean touchingOriginalVehicle = originalVehicle != null
+                && player.getBoundingBox().inflate(VEHICLE_CONTACT_INFLATION)
+                        .intersects(originalVehicle.getBoundingBox());
+        RequestPosition requestPosition = dismountRecovery.requestPosition().orElseThrow();
+        boolean serverPositionChanged = !passenger
+                && squaredDistance(player, requestPosition) > DISMOUNT_POSITION_EPSILON_SQR;
+
+        BlockPos feet = navigationFeetResolver.resolve(player);
+        boolean stableBlockSupport = isStableDismountSupport(client, feet);
+        boolean safeWater = isSafeDismountWater(client, feet);
+        BlockPos egress = !passenger && touchingOriginalVehicle
+                ? revalidateDismountEgress(client, player, target)
+                : null;
+        if (egress == null && !touchingOriginalVehicle) {
+            resetDismountEgressProgress(null, null);
+        }
+        boolean egressProgress = egress != null && recordDismountEgressProgress(player, egress);
+        return new Observation(
+                passenger,
+                ridingOriginalVehicle,
+                originalVehiclePresent,
+                touchingOriginalVehicle,
+                stableBlockSupport,
+                safeWater,
+                serverPositionChanged,
+                egress != null,
+                egressProgress
+        );
+    }
+
+    private double squaredDistance(LocalPlayer player, RequestPosition requestPosition) {
+        double dx = player.getX() - requestPosition.x();
+        double dy = player.getY() - requestPosition.y();
+        double dz = player.getZ() - requestPosition.z();
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private BlockPos revalidateDismountEgress(
+            Minecraft client,
+            LocalPlayer player,
+            RouteStep target
+    ) {
+        if (client.level == null) {
+            resetDismountEgressProgress(null, null);
+            return null;
+        }
+        if (dismountEgress != null && isValidDismountEgress(client, player, dismountEgress)) {
+            return dismountEgress;
+        }
+
+        Entity originalVehicle = client.level.getEntity(dismountRecovery.originalBoatEntityId());
+        if (originalVehicle == null) {
+            resetDismountEgressProgress(null, null);
+            return null;
+        }
+        BlockPos playerFeet = navigationFeetResolver.resolve(player);
+        BlockPos selected = boatEgressSelector.select(
+                new BoatEgressSelector.EgressProbe() {
+                    @Override
+                    public boolean loaded(BlockPos feet) {
+                        return areLiveBlocksLoaded(client, feet, feet.above(), feet.below());
+                    }
+
+                    @Override
+                    public boolean bodyClear(BlockPos feet) {
+                        return isLiveBodyClear(client, feet)
+                                && !isDangerousLiveBlock(client, feet)
+                                && !isDangerousLiveBlock(client, feet.above());
+                    }
+
+                    @Override
+                    public boolean stableBlockSupport(BlockPos feet) {
+                        return isStableDismountSupport(client, feet);
+                    }
+
+                    @Override
+                    public boolean safeWater(BlockPos feet) {
+                        return isSafeDismountWater(client, feet);
+                    }
+
+                    @Override
+                    public boolean destinationCollisionFree(BlockPos feet) {
+                        return isDismountDestinationCollisionFree(client, player, feet);
+                    }
+                },
+                playerFeet,
+                originalVehicle.getBoundingBox().getCenter(),
+                navigationTarget(player, target)
+        ).filter(candidate -> isValidDismountEgress(client, player, candidate)).orElse(null);
+        if (!Objects.equals(selected, dismountEgress)) {
+            resetDismountEgressProgress(selected, player);
+        }
+        return selected;
+    }
+
+    private boolean isValidDismountEgress(Minecraft client, LocalPlayer player, BlockPos feet) {
+        return areLiveBlocksLoaded(client, feet, feet.above(), feet.below())
+                && isLiveBodyClear(client, feet)
+                && !isDangerousLiveBlock(client, feet)
+                && !isDangerousLiveBlock(client, feet.above())
+                && !isDangerousLiveBlock(client, feet.below())
+                && (isStableDismountSupport(client, feet) || isSafeDismountWater(client, feet))
+                && isDismountDestinationCollisionFree(client, player, feet);
+    }
+
+    private boolean isStableDismountSupport(Minecraft client, BlockPos feet) {
+        if (client.level == null
+                || !areLiveBlocksLoaded(client, feet, feet.above(), feet.below())
+                || !isLiveBodyClear(client, feet)
+                || isDangerousLiveBlock(client, feet)
+                || isDangerousLiveBlock(client, feet.above())
+                || isDangerousLiveBlock(client, feet.below())
+                || !isSafeSolidSupport(client, feet.below())) {
+            return false;
+        }
+        return (client.level.getFluidState(feet).isEmpty()
+                        || client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER))
+                && (client.level.getFluidState(feet.above()).isEmpty()
+                        || client.level.getFluidState(feet.above()).is(net.minecraft.tags.FluidTags.WATER));
+    }
+
+    private boolean isSafeDismountWater(Minecraft client, BlockPos feet) {
+        return client.level != null
+                && areLiveBlocksLoaded(client, feet, feet.above(), feet.below())
+                && isLiveBodyClear(client, feet)
+                && !isDangerousLiveBlock(client, feet)
+                && !isDangerousLiveBlock(client, feet.above())
+                && !isDangerousLiveBlock(client, feet.below())
+                && client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.WATER)
+                && (client.level.getFluidState(feet.above()).isEmpty()
+                        || client.level.getFluidState(feet.above()).is(net.minecraft.tags.FluidTags.WATER));
+    }
+
+    private boolean isDismountDestinationCollisionFree(
+            Minecraft client,
+            LocalPlayer player,
+            BlockPos feet
+    ) {
+        if (client.level == null) {
+            return false;
+        }
+        AABB destinationBox = player.getDimensions(Pose.STANDING)
+                .makeBoundingBox(Vec3.atBottomCenterOf(feet));
+        return client.level.getWorldBorder().isWithinBounds(destinationBox)
+                && client.level.noCollision(player, destinationBox);
+    }
+
+    private boolean recordDismountEgressProgress(LocalPlayer player, BlockPos egress) {
+        double distance = Math.sqrt(squaredHorizontalDistance(player, egress));
+        if (!egress.equals(dismountEgress)) {
+            resetDismountEgressProgress(egress, player);
+            return false;
+        }
+        boolean progressed = distance <= lastDismountEgressDistance - EGRESS_PROGRESS_EPSILON;
+        lastDismountEgressDistance = distance;
+        return progressed;
+    }
+
+    private void resetDismountEgressProgress(BlockPos egress, LocalPlayer player) {
+        dismountEgress = egress == null ? null : egress.immutable();
+        lastDismountEgressDistance = egress == null || player == null
+                ? Double.POSITIVE_INFINITY
+                : Math.sqrt(squaredHorizontalDistance(player, egress));
+    }
+
+    private void clearPlanningForRecovery() {
+        cancelPendingPlan();
+        pathSegments.clear();
+        currentStepOrdinal = 0;
+        consecutiveNoPathFailures = 0;
+        stuckTicks = 0;
+        horizontalCollisionTicks = 0;
+        lastDistance = Double.MAX_VALUE;
+        lastWaypointDistance = Double.MAX_VALUE;
+        lastPlayerPos = Vec3.ZERO;
+        breakingBlock = null;
+        activeStepSignature = null;
+        activeStepTicks = 0;
+        actionFailures = 0;
+        movementRecoveryFailures = 0;
+        pendingPlacementBlock = null;
+        pendingPlacementTicks = 0;
+        actionAcknowledged = false;
+        dropCommitted = false;
+        eatingSession = false;
+        waitingForChunk = false;
+        movementSamples.clear();
+        movementSampleTick = 0;
+    }
+
+    static boolean shouldBeginVehicleDismountAtArrival(boolean passenger, boolean vehiclePresent) {
+        return passenger && vehiclePresent;
+    }
+
+    static boolean shouldBeginVehicleDismountForWaypoint(
+            boolean passenger,
+            boolean vehiclePresent,
+            boolean swimWaypoint,
+            boolean vehicleIsBoat,
+            boolean surfaceWaterRoute
+    ) {
+        return passenger
+                && vehiclePresent
+                && (!swimWaypoint || vehicleIsBoat && !surfaceWaterRoute);
+    }
+
+    static DismountTerminalOutcome applyDismountTerminalEffects(
+            DismountLifecycleEffects effects,
+            Runnable freshReplan
+    ) {
+        Objects.requireNonNull(effects, "effects");
+        Objects.requireNonNull(freshReplan, "freshReplan");
+        if (effects.freshReplan()) {
+            freshReplan.run();
+        }
+        return new DismountTerminalOutcome(effects.pauseStuck());
+    }
+
+    static boolean shouldBoardBoat(int candidateId, Predicate<Integer> suppressedPredicate) {
+        Objects.requireNonNull(suppressedPredicate, "suppressedPredicate");
+        return !suppressedPredicate.test(candidateId);
+    }
+
+    static DismountLifecycleEffects dismountLifecycleEffects(
+            boolean beginning,
+            Action action,
+            boolean passenger
+    ) {
+        Objects.requireNonNull(action, "action");
+        if (beginning) {
+            return new DismountLifecycleEffects(
+                    true, true, false, false, DismountInputMode.KEEP_SHIFT, DismountMotion.NONE
+            );
+        }
+        return switch (action) {
+            case NONE -> new DismountLifecycleEffects(
+                    false, false, false, false, DismountInputMode.NEUTRAL, DismountMotion.NONE
+            );
+            case REQUEST_DISMOUNT -> new DismountLifecycleEffects(
+                    true, false, false, false, DismountInputMode.REQUEST_SHIFT, DismountMotion.NONE
+            );
+            case HOLD -> new DismountLifecycleEffects(
+                    true,
+                    false,
+                    false,
+                    false,
+                    passenger ? DismountInputMode.KEEP_SHIFT : DismountInputMode.NEUTRAL,
+                    DismountMotion.NONE
+            );
+            case STEER_EGRESS -> new DismountLifecycleEffects(
+                    true, false, false, false, DismountInputMode.NEUTRAL, DismountMotion.STEER
+            );
+            case PULSE_JUMP -> new DismountLifecycleEffects(
+                    true, false, false, false, DismountInputMode.NEUTRAL, DismountMotion.JUMP
+            );
+            case COMPLETE_REPLAN -> new DismountLifecycleEffects(
+                    true, false, true, false, DismountInputMode.NEUTRAL, DismountMotion.NONE
+            );
+            case FAILED -> new DismountLifecycleEffects(
+                    true, false, false, true, DismountInputMode.NEUTRAL, DismountMotion.NONE
+            );
+        };
     }
 
     private void pressUse(Minecraft client, boolean pressed) {
@@ -2857,9 +3290,6 @@ public final class MovementController {
         if (fireworkCooldown > 0) {
             fireworkCooldown--;
         }
-        if (dismountCooldown > 0) {
-            dismountCooldown--;
-        }
     }
 
     private void resetProgress() {
@@ -2892,7 +3322,6 @@ public final class MovementController {
         eatCooldown = 0;
         elytraStartCooldown = 0;
         fireworkCooldown = 0;
-        dismountCooldown = 0;
     }
 
     private void resetBreakBudgetIfTargetChanged(RouteStep target) {
@@ -3028,6 +3457,35 @@ public final class MovementController {
 
     private record BoatInput(boolean left, boolean right) {
         private static final BoatInput NEUTRAL = new BoatInput(false, false);
+    }
+
+    enum DismountInputMode {
+        REQUEST_SHIFT,
+        KEEP_SHIFT,
+        NEUTRAL
+    }
+
+    enum DismountMotion {
+        NONE,
+        STEER,
+        JUMP
+    }
+
+    record DismountLifecycleEffects(
+            boolean returnImmediately,
+            boolean clearPlanning,
+            boolean freshReplan,
+            boolean pauseStuck,
+            DismountInputMode inputMode,
+            DismountMotion motion
+    ) {
+        DismountLifecycleEffects {
+            Objects.requireNonNull(inputMode, "inputMode");
+            Objects.requireNonNull(motion, "motion");
+        }
+    }
+
+    record DismountTerminalOutcome(boolean pauseStuck) {
     }
 
     private record MovementSample(int tick, double x, double z) {
