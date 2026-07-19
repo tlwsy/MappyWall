@@ -221,4 +221,3 @@ State that the fix removes coordinate disagreement and infinite replanning, but 
 git add docs/design.md
 git commit -m "Document logical navigation feet"
 ```
-

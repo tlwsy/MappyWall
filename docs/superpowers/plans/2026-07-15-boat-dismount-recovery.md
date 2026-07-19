@@ -231,4 +231,3 @@ Record tests for direct server placement on shore, standing on the boat edge, sa
 git add docs/design.md
 git commit -m "Document boat dismount recovery"
 ```
-

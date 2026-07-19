@@ -264,4 +264,3 @@ Add the exact distinction: accepted continuous buffers are previewed but remain 
 git add docs/design.md
 git commit -m "Document route continuity previews"
 ```
-
