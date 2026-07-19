@@ -63,7 +63,9 @@ For every consecutive `SWIM` waypoint, the adapter resolves its column upward to
 - consecutive resolved surfaces remain navigably level;
 - the resolved surface belongs to the accepted path corridor.
 
-Confirmed traversal length includes the edge from the current logical feet position (or the preceding accepted non-water step) into the first `SWIM` waypoint, followed by the edges between consecutive `SWIM` waypoints. Cardinal edges contribute `1.0` and diagonal edges contribute `sqrt(2)`. This makes a 12-block-wide cardinal crossing meet the threshold at its twelfth water block. A non-`SWIM` step, an unloaded column, a non-boatable surface, an incompatible surface height, or the end of confirmed route evidence terminates the proof.
+Each continuous water run owns a fixed entry anchor and a monotonic completed-distance accumulator. When a `SWIM` edge is consumed, its already-confirmed horizontal length is added exactly once. Future evidence is rescanned from the current logical feet position through the accepted visible suffix and added to the completed prefix for the eligibility decision. This prevents rolling planning from losing proof: if 8 blocks were initially confirmed, 4 are traversed, and a continuous buffer later proves 4 more, the run has 4 completed plus 8 future confirmed blocks and reaches the 12-block threshold.
+
+Confirmed traversal length includes the edge from the water-run entry anchor (or preceding accepted non-water step) into the first `SWIM` waypoint, followed by the edges between consecutive `SWIM` waypoints. Cardinal edges contribute `1.0` and diagonal edges contribute `sqrt(2)`. This makes a 12-block-wide cardinal crossing meet the threshold at its twelfth water block. A non-`SWIM` step, an unloaded column, a non-boatable surface, an incompatible surface height, or the end of confirmed route evidence terminates future proof. Already completed confirmed distance is retained across an ordinary same-target local replan while the player remains in the same compatible water run; a newly observed incompatible surface or disconnected water run starts new evidence rather than joining unrelated distances.
 
 The policy returns:
 
@@ -73,7 +75,9 @@ The policy returns:
 
 Unknown terrain is not counted. If the current accepted path proves only 8 water blocks and ends at an unloaded frontier, the player continues swimming while lookahead proceeds. If a later accepted continuous buffer raises the confirmed distance to 12, acquisition becomes eligible at that time.
 
-Eligibility is latched for the current continuous water run. Advancing far enough that the remaining visible suffix drops below 12 does not cancel an acquisition already justified by the original confirmed run. The latch resets on leaving the water run, changing navigation target/generation, forcing a route reset, or entering a terminal controller state. It does not cause a mounted boat to dismount near shore; existing boat-to-land recovery remains responsible for that transition.
+Eligibility is latched for the current continuous water run. Advancing far enough that the remaining visible suffix drops below 12 does not cancel an acquisition already justified by the original confirmed run. The latch and completed-distance accumulator reset on leaving or disconnecting from the water run, changing navigation target/generation, changing world, or entering a terminal controller state. An ordinary same-target local replan does not erase distance already traversed in the compatible run. It does not cause a mounted boat to dismount near shore; existing boat-to-land recovery remains responsible for that transition.
+
+The existing pre-execution boat-to-land decision must reuse the same resolved boatable-surface classification. A mounted boat following a submerged `SWIM` waypoint remains in boat control when that waypoint's column resolves to the compatible water surface. It must not call the old exact-cell `isSurfaceWaterRoute()` test and immediately dismount merely because the planner waypoint is below the top water block. A `SWIM` column that cannot resolve to a boatable continuation may still begin the existing bounded dismount transition.
 
 Short water runs neither board a nearby empty boat nor place a carried boat.
 
@@ -92,7 +96,7 @@ The bounded acquisition phases are:
 
 `PASS`, `FAIL`, a missing held boat, an invalidated placement surface, or an unavailable GUI transaction does not enter the old unconditional 40-tick success cooldown. Closing an inventory or other screen may make acquisition eligible again, but opening a screen never stops aggressive-mode water movement.
 
-The existing priority remains: nearby empty boat, then carried boat, then swimming. A successfully placed boat must be observed as an entity before boarding is considered successful. Server rejection, delayed inventory synchronization, and entity-spawn delay are explicit observations rather than inferred success.
+The existing priority remains: nearby empty boat, then carried boat, then swimming. Before sending a placement interaction, the adapter records the IDs of nearby boats. Placement confirmation accepts only a subsequently observed eligible boat whose ID was absent from that baseline and whose position is near the chosen route-corridor surface. This prevents an older or another player's boat from being misidentified as the result of the placement. Server rejection, delayed inventory synchronization, and entity-spawn delay are explicit observations rather than inferred success.
 
 ## Configuration and migration
 
@@ -137,6 +141,7 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 - a submerged `SWIM` waypoint can resolve to the valid surface of its water column;
 - covered, obstructed, incompatible-height, non-water, and unloaded columns terminate evidence;
 - an accepted continuous buffer can complete the 12-block proof, while pending and hidden-retreat work cannot;
+- completed confirmed water distance is accumulated exactly once, combines with later rolling lookahead, and survives an ordinary compatible same-target replan;
 - eligibility remains latched after the remaining suffix becomes shorter than 12 and resets at the water-run boundary;
 - short water runs do not board existing boats.
 
@@ -145,8 +150,9 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 - a nearby eligible empty boat is preferred over placing an inventory boat;
 - one inventory swap is followed by held-item confirmation rather than repeated swaps;
 - an invalid surface or rejected interaction does not start a success cooldown;
-- an accepted placement waits for an observed boat entity before boarding;
+- an accepted placement waits for a newly observed route-adjacent boat ID that was absent from the pre-interaction baseline;
 - entity confirmation and passenger confirmation advance the state exactly once;
+- a mounted boat remains mounted for a submerged `SWIM` waypoint whose column resolves to the compatible boatable surface;
 - placement timeout and bounded repeated failure suppress acquisition for that water run and continue swimming;
 - target reset, pause, hard reset, and world change clear acquisition state.
 
