@@ -33,12 +33,18 @@ $env:GRADLE_OPTS='-DsocksProxyHost=127.0.0.1 -DsocksProxyPort=7890'
 
 HTTP proxy environment variables were useful for ad-hoc metadata checks, but Gradle artifact downloads were more reliable with `GRADLE_OPTS`.
 
-## Core-only fallback
+## Fabric-disabled diagnostic only
 
-If mappings or remote dependencies are temporarily unavailable, the pure core can still be tested without compiling the Minecraft client source:
+There is currently no isolated core-only test source set. Do not use
+`-PenableFabric=false test` as a fallback: the ordinary test source set still
+contains tests that import client and Minecraft classes.
+
+The pure `src/main/java` sources can be compiled as a limited diagnostic
+without applying Loom, but this does not validate the client, tests, or release
+jar:
 
 ```powershell
-.\gradlew.bat -PenableFabric=false test
+.\gradlew.bat -PenableFabric=false compileJava
 ```
 
 ## Gradle wrapper
