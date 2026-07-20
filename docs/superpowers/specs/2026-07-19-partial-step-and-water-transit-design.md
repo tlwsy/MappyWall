@@ -59,13 +59,15 @@ For every consecutive `SWIM` waypoint, the adapter resolves its column upward to
 
 - the relevant chunks and cells are loaded;
 - the top cell is water and the cell above is not water;
-- the space required by the boat is not blocked;
+- the space required by the boat has no block collision (the player or an existing boat does not invalidate route proof);
 - consecutive resolved surfaces remain navigably level;
 - the resolved surface belongs to the accepted path corridor.
 
-Each continuous water run owns a fixed entry anchor and a monotonic completed-distance accumulator. When a `SWIM` edge is consumed, its already-confirmed horizontal length is added exactly once. Future evidence is rescanned from the current logical feet position through the accepted visible suffix and added to the completed prefix for the eligibility decision. This prevents rolling planning from losing proof: if 8 blocks were initially confirmed, 4 are traversed, and a continuous buffer later proves 4 more, the run has 4 completed plus 8 future confirmed blocks and reaches the 12-block threshold.
+Each continuous water run owns a monotonic completed-distance accumulator and a confirmed cursor. The cursor starts at the entry anchor and advances to each consumed `SWIM` waypoint; it is not a second distance source. When a `SWIM` edge is consumed, its already-confirmed horizontal length is added exactly once. Future evidence is rescanned from the cursor (or the player's rebased logical feet position after a proven-compatible replan) through the accepted visible suffix and added to the completed prefix for the eligibility decision. This prevents rolling planning from losing proof: if 8 blocks were initially confirmed, 4 are traversed, and a continuous buffer later proves 4 more, the run has 4 completed plus 8 future confirmed blocks and reaches the 12-block threshold.
 
 Confirmed traversal length includes the edge from the water-run entry anchor (or preceding accepted non-water step) into the first `SWIM` waypoint, followed by the edges between consecutive `SWIM` waypoints. Cardinal edges contribute `1.0` and diagonal edges contribute `sqrt(2)`. This makes a 12-block-wide cardinal crossing meet the threshold at its twelfth water block. A non-`SWIM` step, an unloaded column, a non-boatable surface, an incompatible surface height, or the end of confirmed route evidence terminates future proof. Already completed confirmed distance is retained across an ordinary same-target local replan while the player remains in the same compatible water run; a newly observed incompatible surface or disconnected water run starts new evidence rather than joining unrelated distances.
+
+Replan preservation is conditional rather than surface-height-only. The controller retains the last confirmed cursor and, when a replacement path arrives, proves that the player's rebased logical anchor is loaded boatable water on the same resolved surface and remains adjacent to that cursor. A shore anchor, a distant same-height pool, a different surface, or missing cursor resets the run; an unfinished partial edge is never added.
 
 The policy returns:
 
@@ -75,11 +77,13 @@ The policy returns:
 
 Unknown terrain is not counted. If the current accepted path proves only 8 water blocks and ends at an unloaded frontier, the player continues swimming while lookahead proceeds. If a later accepted continuous buffer raises the confirmed distance to 12, acquisition becomes eligible at that time.
 
-Eligibility is latched for the current continuous water run. Advancing far enough that the remaining visible suffix drops below 12 does not cancel an acquisition already justified by the original confirmed run. The latch and completed-distance accumulator reset on leaving or disconnecting from the water run, changing navigation target/generation, changing world, or entering a terminal controller state. An ordinary same-target local replan does not erase distance already traversed in the compatible run. It does not cause a mounted boat to dismount near shore; existing boat-to-land recovery remains responsible for that transition.
+Eligibility is latched for the current continuous water run. Advancing far enough that the remaining visible suffix drops below 12 does not cancel an acquisition already justified by the original confirmed run. The latch and completed-distance accumulator reset on leaving or disconnecting from the water run, switching between normal and aggressive automation styles, changing the navigation target or external route generation, changing world, or entering a terminal controller state. An internal ordinary same-target local replan does not erase distance already traversed in the compatible run. It does not cause a mounted boat to dismount near shore; existing boat-to-land recovery remains responsible for that transition.
 
 The existing pre-execution boat-to-land decision must reuse the same resolved boatable-surface classification. A mounted boat following a submerged `SWIM` waypoint remains in boat control when that waypoint's column resolves to the compatible water surface. It must not call the old exact-cell `isSurfaceWaterRoute()` test and immediately dismount merely because the planner waypoint is below the top water block. A `SWIM` column that cannot resolve to a boatable continuation may still begin the existing bounded dismount transition.
 
 Mounted waypoint completion must reuse that resolution as well. A boat at the resolved surface completes the submerged `SWIM` waypoint using the existing horizontal distance threshold and the resolved compatible surface, rather than comparing the boat rider's physical Y with the submerged planner cell. A player who is swimming without a boat retains the existing physical-Y completion rule and tolerance. This prevents a correctly acquired surface boat from remaining forever on the first deep-water waypoint.
+
+Compatibility compares all three observations: the current water-run surface, the target waypoint's resolved surface, and the water surface under the current boat hull. Merely resolving some water above a submerged waypoint is insufficient at a waterfall or other surface-height transition.
 
 Short water runs neither board a nearby empty boat nor place a carried boat.
 
@@ -89,7 +93,7 @@ Boat acquisition is a non-blocking side process. Swimming continues unless an ac
 
 The bounded acquisition phases are:
 
-1. `IDLE`: no eligible long water run.
+1. `IDLE`: no transaction is in flight; this includes an ineligible run, no available boat resource, or approach toward a proven route-corridor boat that is not yet reachable.
 2. `SELECTING`: prefer a nearby alive, empty, reachable boat that is not suppressed by dismount recovery; otherwise select or move a carried `BoatItem` to the hotbar and wait for the inventory state to confirm it is held.
 3. `PLACING`: choose a reachable validated surface cell from the confirmed route corridor, orient the server-facing interaction without changing the user's aggressive-mode camera, and send one use action.
 4. `AWAITING_ENTITY`: only an accepted interaction enters this phase. Continue safe swimming while waiting for a nearby newly visible empty boat.
@@ -98,7 +102,11 @@ The bounded acquisition phases are:
 
 `PASS`, `FAIL`, a missing held boat, an invalidated placement surface, or an unavailable GUI transaction does not enter the old unconditional 40-tick success cooldown. Closing an inventory or other screen may make acquisition eligible again, but opening a screen never stops aggressive-mode water movement.
 
-The existing priority remains: nearby empty boat, then carried boat, then swimming. Before sending a placement interaction, the adapter records the IDs of nearby boats. Placement confirmation accepts only a subsequently observed eligible boat whose ID was absent from that baseline and whose position is near the chosen route-corridor surface. This prevents an older or another player's boat from being misidentified as the result of the placement. Server rejection, delayed inventory synchronization, and entity-spawn delay are explicit observations rather than inferred success.
+If an eligible path is deeper than interaction reach, acquisition temporarily swims toward either the accepted route-corridor surface directly under the preferred existing boat or the first resolved route-corridor surface while preserving the real submerged waypoint. An existing boat may be discovered before it is vertically reachable; it defers inventory placement only when its compatible resolved hull column exactly matches current accepted surface evidence. A boat in a nearby disconnected same-height pool or across an unrelated wall therefore cannot capture the controller. This surface approach and the entity/passenger confirmation phases keep the player within interaction range without pausing water movement. Vertical approach progress participates in stall accounting, and the synthetic ascent suspends only the unrelated absolute waypoint timer, so a valid deep ascent is not mistaken for a horizontal deadlock while collision and no-progress recovery remain active.
+
+A rejected use packet enters a non-blocking 40-tick retry backoff before a second placement attempt. This preserves the former maximum placement packet rate without treating rejection as success; two rejected placements, a lost request precondition, or a bounded confirmation timeout suppresses acquisition for the remainder of the water run.
+
+The existing priority remains: nearby empty boat, then carried boat, then swimming. Before sending a placement interaction, the controller records all currently loaded boat entity IDs. Placement confirmation accepts only a subsequently observed eligible boat whose ID was absent from that baseline and whose position is near the chosen route-corridor surface. This prevents an older or another player's boat from being misidentified as the result of the placement. Server rejection, delayed inventory synchronization, and entity-spawn delay are explicit observations rather than inferred success.
 
 ## Configuration and migration
 
@@ -108,8 +116,9 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 
 ## Component boundaries
 
-- `MovementController`: samples live collision/water/entity/inventory state, delegates pure decisions, executes vanilla-compatible input and interaction actions, and owns per-water-run acquisition state.
-- `WaterTransitPolicy`: pure threshold, latch, phase, timeout, and fallback decisions with no Minecraft dependency.
+- `MovementController`: samples live collision/water/entity/inventory state, proves replan, completed-edge, waypoint, and boat-hull compatibility, delegates pure decisions, executes vanilla-compatible input and interaction actions, and owns per-water-run acquisition state.
+- `WaterTransitPolicy`: pure confirmed-distance, surface-run identity, threshold, and per-water-run eligibility latch with no Minecraft dependency.
+- `BoatAcquisitionPolicy`: pure inventory-selection, placement-confirmation, boarding, retry-backoff, timeout, and per-water-run fallback state with no Minecraft dependency.
 - `PathSegmentCoordinator`: unchanged ownership of accepted active and buffered routes; its preview snapshot supplies action-preserving confirmed evidence.
 - `NavigationFeetResolver`: unchanged logical coordinate source.
 - `AutoNavigationConfig` and `NavigationConfigStore`: threshold persistence, validation, and old-file migration.
@@ -121,7 +130,8 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 - No walking, sprinting, swimming, boat, jump, placement, breaking, or packet-rate constant is increased.
 - The partial-step fix delegates to vanilla `maxUpStep`; it does not change that value or inject vertical motion.
 - World, collision, entity, chunk, inventory, and interaction-result reads remain on the client thread.
-- Water-run analysis is linear in the already bounded visible path and stops as soon as 12 blocks are proved; it does not add a world search.
+- Water-run analysis is linear in the already bounded visible path and stops as soon as the configured threshold is proved; it does not add an unbounded world search.
+- For the final `SWIM` waypoint returned by `nextWaypoint`, the controller reuses that pre-execution evidence decision in `swimOrBoat` instead of scanning the same deep columns twice in one controller tick.
 - Pending, stale, unloaded, or hidden retreat paths cannot justify acquiring a boat.
 - Acquisition failure always falls back to continued swimming or an existing safe terminal state; it cannot loop indefinitely or repeatedly consume boats.
 - Dismount recovery and original-boat reboarding suppression remain authoritative.
@@ -151,6 +161,7 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 ### Acquisition
 
 - a nearby eligible empty boat is preferred over placing an inventory boat;
+- a compatible route-adjacent surface boat discovered from deep water is approached before inventory placement, then boarded only after it becomes reachable and visible;
 - one inventory swap is followed by held-item confirmation rather than repeated swaps;
 - an invalid surface or rejected interaction does not start a success cooldown;
 - an accepted placement waits for a newly observed route-adjacent boat ID that was absent from the pre-interaction baseline;
@@ -158,6 +169,7 @@ Loading an older `navigation.json` that lacks the field must explicitly supply 1
 - a mounted boat remains mounted for a submerged `SWIM` waypoint whose column resolves to the compatible boatable surface;
 - placement timeout and bounded repeated failure suppress acquisition for that water run and continue swimming;
 - target reset, pause, hard reset, and world change clear acquisition state.
+- switching normal to aggressive or aggressive to normal clears both water-run and acquisition state before the new style's threshold is evaluated.
 
 ### Configuration
 
@@ -175,8 +187,10 @@ Use aggressive mode in an integrated or vanilla-compatible server world:
 3. Cross water runs of 3, 11, 12, and more than 12 blocks with a boat in the inventory; confirm only the last two acquire a boat.
 4. Repeat a long crossing whose accepted route initially ends before 12 blocks and later receives a rolling continuation; confirm swimming continues first and acquisition begins only after enough route is confirmed.
 5. Test a deep lake whose `SWIM` waypoints are below the top water layer; confirm the controller resolves the actual surface and places a boat.
-6. Test a low bridge, covered water, changing water levels, an open inventory screen, a rejected placement, and delayed entity spawn; confirm bounded fallback and uninterrupted swimming.
-7. Reach shore in the acquired boat and confirm the existing server-confirmed dismount recovery still completes without reboarding or hop/replan loops.
+6. Repeat with no carried boat and an empty compatible boat above the accepted corridor; confirm continuous ascent toward the existing boat and boarding only after reach/visibility checks pass.
+7. Set aggressive distance to 37, qualify a 12-block run in normal style, and switch styles in both directions; confirm neither style inherits the other's eligibility latch.
+8. Test a low bridge, covered water, changing water levels, an open inventory screen, a rejected placement, and delayed entity spawn; confirm bounded fallback and uninterrupted swimming.
+9. Reach shore in the acquired boat and confirm the existing server-confirmed dismount recovery still completes without reboarding or hop/replan loops.
 
 ## Non-goals
 
