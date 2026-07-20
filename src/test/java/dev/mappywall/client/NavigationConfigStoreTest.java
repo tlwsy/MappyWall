@@ -68,6 +68,16 @@ class NavigationConfigStoreTest {
     }
 
     @Test
+    void minimumScalePositiveScientificIntegerClampsToSupportedMaximum() throws IOException {
+        assertEquals(128, loadDistance("100e2147483647"));
+    }
+
+    @Test
+    void minimumScaleNegativeScientificIntegerClampsToSupportedMinimum() throws IOException {
+        assertEquals(1, loadDistance("-100e2147483647"));
+    }
+
+    @Test
     void customDistanceRoundTripsAndResetRestoresTwelve() throws IOException {
         Path path = directory.resolve("navigation.json");
         NavigationConfigStore store = new NavigationConfigStore(path);

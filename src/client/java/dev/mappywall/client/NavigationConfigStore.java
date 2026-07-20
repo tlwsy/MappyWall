@@ -104,9 +104,12 @@ final class NavigationConfigStore {
             return fallback;
         }
         try {
-            BigDecimal decimal = new BigDecimal(element.getAsString()).stripTrailingZeros();
+            BigDecimal decimal = new BigDecimal(element.getAsString());
             if (decimal.scale() > 0) {
-                return fallback;
+                BigDecimal stripped = decimal.stripTrailingZeros();
+                if (stripped.scale() > 0) {
+                    return fallback;
+                }
             }
             if (decimal.compareTo(BigDecimal.valueOf(WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS)) < 0) {
                 return WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS;
