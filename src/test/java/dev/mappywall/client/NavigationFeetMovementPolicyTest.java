@@ -2,6 +2,7 @@ package dev.mappywall.client;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -17,6 +18,54 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 final class NavigationFeetMovementPolicyTest {
     private final NavigationFeetResolver feetResolver = new NavigationFeetResolver();
+
+    @Test
+    void groundedOrdinaryWalkDelegatesCollisionResolutionToVanilla() {
+        assertTrue(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                LocalPathPlanner.StepAction.WALK,
+                true,
+                false,
+                false,
+                false,
+                false
+        ));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = LocalPathPlanner.StepAction.class, names = {
+            "JUMP", "DROP", "SWIM", "BREAK", "PLACE"
+    })
+    void nonWalkActionsKeepDedicatedCollisionHandling(LocalPathPlanner.StepAction action) {
+        assertFalse(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                action,
+                true,
+                false,
+                false,
+                false,
+                false
+        ));
+    }
+
+    @Test
+    void walkOutsideOrdinaryGroundMovementKeepsDedicatedHandling() {
+        assertFalse(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                LocalPathPlanner.StepAction.WALK, false, false, false, false, false));
+        assertFalse(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                LocalPathPlanner.StepAction.WALK, true, true, false, false, false));
+        assertFalse(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                LocalPathPlanner.StepAction.WALK, true, false, true, false, false));
+        assertFalse(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                LocalPathPlanner.StepAction.WALK, true, false, false, true, false));
+        assertFalse(MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                LocalPathPlanner.StepAction.WALK, true, false, false, false, true));
+    }
+
+    @Test
+    void vanillaCollisionDelegationRejectsNullActions() {
+        assertThrows(NullPointerException.class, () ->
+                MovementController.shouldDelegateAggressiveWalkCollisionToVanilla(
+                        null, true, false, false, false, false));
+    }
 
     @ParameterizedTest
     @ValueSource(doubles = {63.9375, 63.875, 63.5, 63.125})

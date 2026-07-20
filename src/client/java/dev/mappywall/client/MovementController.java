@@ -2595,6 +2595,23 @@ public final class MovementController {
         return new Vec3(0.0, currentVelocity.y, 0.0);
     }
 
+    static boolean shouldDelegateAggressiveWalkCollisionToVanilla(
+            LocalPathPlanner.StepAction action,
+            boolean onGround,
+            boolean inWater,
+            boolean jump,
+            boolean sneak,
+            boolean dismountRecovering
+    ) {
+        Objects.requireNonNull(action, "action");
+        return action == LocalPathPlanner.StepAction.WALK
+                && onGround
+                && !inWater
+                && !jump
+                && !sneak
+                && !dismountRecovering;
+    }
+
     private void applyAggressiveGroundVelocity(
             Minecraft client,
             LocalPlayer player,
