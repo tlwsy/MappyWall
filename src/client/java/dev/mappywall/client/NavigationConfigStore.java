@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -105,15 +104,17 @@ final class NavigationConfigStore {
             return fallback;
         }
         try {
-            BigDecimal decimal = element.getAsBigDecimal();
-            BigInteger value = decimal.toBigIntegerExact();
-            if (value.compareTo(BigInteger.valueOf(WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS)) < 0) {
+            BigDecimal decimal = new BigDecimal(element.getAsString()).stripTrailingZeros();
+            if (decimal.scale() > 0) {
+                return fallback;
+            }
+            if (decimal.compareTo(BigDecimal.valueOf(WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS)) < 0) {
                 return WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS;
             }
-            if (value.compareTo(BigInteger.valueOf(WaterTransitPolicy.MAXIMUM_BOAT_DISTANCE_BLOCKS)) > 0) {
+            if (decimal.compareTo(BigDecimal.valueOf(WaterTransitPolicy.MAXIMUM_BOAT_DISTANCE_BLOCKS)) > 0) {
                 return WaterTransitPolicy.MAXIMUM_BOAT_DISTANCE_BLOCKS;
             }
-            return value.intValue();
+            return decimal.intValueExact();
         } catch (ArithmeticException | NumberFormatException invalid) {
             return fallback;
         }

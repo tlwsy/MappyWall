@@ -43,6 +43,8 @@ class NavigationConfigStoreTest {
         assertEquals(1, loadDistance("-7"));
         assertEquals(128, loadDistance("129"));
         assertEquals(12, loadDistance("12.5"));
+        assertEquals(12, loadDistance("12.0"));
+        assertEquals(12, loadDistance("1.2e1"));
     }
 
     @Test
@@ -53,6 +55,16 @@ class NavigationConfigStoreTest {
     @Test
     void integerBelowIntRangeClampsToSupportedMinimum() throws IOException {
         assertEquals(1, loadDistance("-2147483649"));
+    }
+
+    @Test
+    void extremePositiveScientificIntegerClampsToSupportedMaximum() throws IOException {
+        assertEquals(128, loadDistance("1e2147483647"));
+    }
+
+    @Test
+    void extremeNegativeScientificIntegerClampsToSupportedMinimum() throws IOException {
+        assertEquals(1, loadDistance("-1e2147483647"));
     }
 
     @Test
