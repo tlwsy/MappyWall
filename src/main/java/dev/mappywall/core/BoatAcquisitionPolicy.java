@@ -36,6 +36,9 @@ public final class BoatAcquisitionPolicy {
         public Decision {
             Objects.requireNonNull(action, "action");
             Objects.requireNonNull(boatEntityId, "boatEntityId");
+            if (boatEntityId.isPresent() && boatEntityId.getAsInt() < 0) {
+                throw new IllegalArgumentException("boat entity id must be non-negative");
+            }
             if ((action == Action.BOARD_SELECTED_BOAT) != boatEntityId.isPresent()) {
                 throw new IllegalArgumentException("only boarding decisions require an entity id");
             }

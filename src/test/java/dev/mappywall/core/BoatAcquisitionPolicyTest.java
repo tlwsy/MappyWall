@@ -324,6 +324,46 @@ class BoatAcquisitionPolicyTest {
     }
 
     @Test
+    void missingSelectedBoatWhileRequestingBoardingFallsBackAtTickForty() {
+        BoatAcquisitionPolicy policy = new BoatAcquisitionPolicy();
+        assertEquals(BOARD_SELECTED_BOAT, policy.tick(observation(
+                true, true, false, false, false, false,
+                OptionalInt.of(41), OptionalInt.empty(), false)).action());
+
+        for (int tick = 1;
+                tick < BoatAcquisitionPolicy.REQUEST_VALIDITY_TIMEOUT_TICKS;
+                tick++) {
+            assertEquals(NONE, policy.tick(observation(
+                    true, true, false, false, false, false,
+                    OptionalInt.empty(), OptionalInt.empty(), false)).action());
+            assertEquals(REQUESTING_BOARDING, policy.phase(), "missing boat tick " + tick);
+        }
+
+        assertEquals(NONE, policy.tick(observation(
+                true, true, false, false, false, false,
+                OptionalInt.empty(), OptionalInt.empty(), false)).action());
+        assertEquals(FALLBACK, policy.phase());
+        assertTrue(policy.selectedBoatId().isEmpty());
+    }
+
+    @Test
+    void missingSelectedBoatWhileAwaitingPassengerFallsBackImmediately() {
+        BoatAcquisitionPolicy policy = new BoatAcquisitionPolicy();
+        BoatAcquisitionPolicy.Decision board = policy.tick(observation(
+                true, true, false, false, false, false,
+                OptionalInt.of(41), OptionalInt.empty(), false));
+        policy.boardingResult(board.boatEntityId().orElseThrow(), true);
+        assertEquals(AWAITING_PASSENGER, policy.phase());
+
+        assertEquals(NONE, policy.tick(observation(
+                true, true, false, false, false, false,
+                OptionalInt.empty(), OptionalInt.empty(), false)).action());
+        assertEquals(FALLBACK, policy.phase());
+        assertEquals(1, policy.boardAttempts());
+        assertTrue(policy.selectedBoatId().isEmpty());
+    }
+
+    @Test
     void transactionUnavailableTicksFreezeEveryActiveTimer() {
         BoatAcquisitionPolicy selection = new BoatAcquisitionPolicy();
         assertEquals(SELECT_CARRIED_BOAT, selection.tick(observation(
@@ -508,6 +548,11 @@ class BoatAcquisitionPolicyTest {
                 () -> new BoatAcquisitionPolicy.Decision(NONE, OptionalInt.of(41)));
         assertThrows(IllegalArgumentException.class,
                 () -> new BoatAcquisitionPolicy.Decision(BOARD_SELECTED_BOAT, OptionalInt.empty()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new BoatAcquisitionPolicy.Decision(
+                        BOARD_SELECTED_BOAT,
+                        OptionalInt.of(-1)
+                ));
 
         assertThrows(NullPointerException.class, () -> new BoatAcquisitionPolicy.Observation(
                 true, true, false, false, false, false, false,
