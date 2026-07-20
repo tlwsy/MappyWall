@@ -16,6 +16,7 @@ class WaterTransitPolicyTest {
     void requiresTwelveConfirmedBlocksAtTheDefaultBoundary() {
         WaterTransitPolicy policy = new WaterTransitPolicy();
         assertEquals(SWIM, policy.observe(run(64, 11.999, false)));
+        assertEquals(SWIM, policy.observe(run(64, Math.nextDown(12.0), false)));
         assertEquals(ACQUIRE_BOAT, policy.observe(run(64, 12.0, false)));
     }
 

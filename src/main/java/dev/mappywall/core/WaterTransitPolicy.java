@@ -7,7 +7,6 @@ public final class WaterTransitPolicy {
     public static final int DEFAULT_MINIMUM_BOAT_DISTANCE_BLOCKS = 12;
     public static final int MINIMUM_BOAT_DISTANCE_BLOCKS = 1;
     public static final int MAXIMUM_BOAT_DISTANCE_BLOCKS = 128;
-    private static final double DISTANCE_EPSILON = 1.0e-9;
 
     public enum TravelDecision {
         SWIM,
@@ -49,7 +48,7 @@ public final class WaterTransitPolicy {
             beginRun(observedY);
         }
         if (completedDistanceBlocks + observation.futureConfirmedDistanceBlocks()
-                + DISTANCE_EPSILON >= observation.minimumBoatDistanceBlocks()) {
+                >= observation.minimumBoatDistanceBlocks()) {
             acquisitionLatched = true;
         }
         if (observation.ridingBoat()) {
