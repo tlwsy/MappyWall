@@ -509,4 +509,36 @@ final class NavigationFeetMovementPolicyTest {
         assertFalse(methodSource.contains("() -> player.getY()"));
         assertFalse(methodSource.contains("navigationFeetResolver.resolve(player).getY()"));
     }
+
+    @Test
+    void aggressiveWalkDelegationIsWiredOnlyThroughWaypointMovement() throws IOException {
+        String source = Files.readString(Path.of(
+                "src", "client", "java", "dev", "mappywall", "client", "MovementController.java"));
+
+        int moveStart = source.indexOf("private MovementResult moveToward(");
+        int moveEnd = source.indexOf("private MovementResult tickElytra(", moveStart);
+        String moveSource = source.substring(moveStart, moveEnd);
+        String compactMove = moveSource.replaceAll("\\s+", "");
+        assertTrue(moveSource.contains("shouldDelegateAggressiveWalkCollisionToVanilla("));
+        assertTrue(moveSource.contains("waypoint.action()"));
+        assertTrue(moveSource.contains("dismountRecovery.active()"));
+        assertTrue(compactMove.contains(
+                "applyAggressiveGroundVelocity(client,player,targetX-player.getX(),"
+                        + "targetZ-player.getZ(),jump,sneak,sprint,"
+                        + "delegateVanillaGroundCollision);"));
+
+        int applyStart = source.indexOf("private void applyAggressiveGroundVelocity(");
+        int applyEnd = source.indexOf("private Vec3 collisionAdjustedHorizontalVelocity(", applyStart);
+        String applySource = source.substring(applyStart, applyEnd);
+        String compactApply = applySource.replaceAll("\\s+", "");
+        assertTrue(applySource.contains("boolean delegateVanillaGroundCollision"));
+        assertTrue(applySource.contains("!delegateVanillaGroundCollision"));
+        assertTrue(compactApply.contains(
+                "applyAggressiveGroundVelocity(client,player,dx,dz,jump,sneak,sprint,false);"));
+
+        int boatStart = source.indexOf("private MovementResult driveBoatToward(");
+        int boatEnd = source.indexOf("private AutomationStyle currentAutomationStyle()", boatStart);
+        String boatSource = source.substring(boatStart, boatEnd);
+        assertTrue(boatSource.contains("collisionAdjustedHorizontalVelocity("));
+    }
 }

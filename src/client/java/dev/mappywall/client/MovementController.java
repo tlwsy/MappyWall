@@ -837,6 +837,14 @@ public final class MovementController {
         double targetX = pos.getX() + 0.5;
         double targetZ = pos.getZ() + 0.5;
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
+            boolean delegateVanillaGroundCollision = shouldDelegateAggressiveWalkCollisionToVanilla(
+                    waypoint.action(),
+                    player.onGround(),
+                    player.isInWater(),
+                    jump,
+                    sneak,
+                    dismountRecovery.active()
+            );
             applyAggressiveGroundVelocity(
                     client,
                     player,
@@ -844,7 +852,8 @@ public final class MovementController {
                     targetZ - player.getZ(),
                     jump,
                     sneak,
-                    sprint
+                    sprint,
+                    delegateVanillaGroundCollision
             );
             return MovementResult.active(pathSnapshot());
         }
@@ -2621,6 +2630,19 @@ public final class MovementController {
             boolean sneak,
             boolean sprint
     ) {
+        applyAggressiveGroundVelocity(client, player, dx, dz, jump, sneak, sprint, false);
+    }
+
+    private void applyAggressiveGroundVelocity(
+            Minecraft client,
+            LocalPlayer player,
+            double dx,
+            double dz,
+            boolean jump,
+            boolean sneak,
+            boolean sprint,
+            boolean delegateVanillaGroundCollision
+    ) {
         clearVanillaMovementKeys(client);
 
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
@@ -2655,7 +2677,8 @@ public final class MovementController {
 
         double velocityX = dirX * speed;
         double velocityZ = dirZ * speed;
-        if (!jump
+        if (!delegateVanillaGroundCollision
+                && !jump
                 && !shouldJump
                 && !player.isInWater()
                 && client.level != null) {
