@@ -1,5 +1,6 @@
 package dev.mappywall.client;
 
+import dev.mappywall.core.WaterTransitPolicy;
 import java.util.Set;
 
 public record AutoNavigationConfig(
@@ -12,7 +13,8 @@ public record AutoNavigationConfig(
         boolean eatingEnabled,
         ListMode foodListMode,
         Set<String> foods,
-        int eatAtFoodLevel
+        int eatAtFoodLevel,
+        int minimumBoatDistanceBlocks
 ) {
     public AutoNavigationConfig {
         breakListMode = breakListMode == null ? ListMode.WHITELIST : breakListMode;
@@ -22,6 +24,10 @@ public record AutoNavigationConfig(
         foodListMode = foodListMode == null ? ListMode.BLACKLIST : foodListMode;
         foods = foods == null ? Set.of() : Set.copyOf(foods);
         eatAtFoodLevel = Math.max(0, Math.min(20, eatAtFoodLevel));
+        minimumBoatDistanceBlocks = Math.max(
+                WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS,
+                Math.min(WaterTransitPolicy.MAXIMUM_BOAT_DISTANCE_BLOCKS, minimumBoatDistanceBlocks)
+        );
     }
 
     public static final Set<String> DEFAULT_NATURAL_BREAK_BLOCKS = Set.of(
@@ -111,7 +117,8 @@ public record AutoNavigationConfig(
                         "minecraft:golden_apple",
                         "minecraft:enchanted_golden_apple"
                 ),
-                16
+                16,
+                WaterTransitPolicy.DEFAULT_MINIMUM_BOAT_DISTANCE_BLOCKS
         );
     }
 
@@ -132,7 +139,8 @@ public record AutoNavigationConfig(
                 safe.eatingEnabled,
                 safe.foodListMode,
                 safe.foods,
-                safe.eatAtFoodLevel
+                safe.eatAtFoodLevel,
+                safe.minimumBoatDistanceBlocks
         );
     }
 

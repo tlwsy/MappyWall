@@ -127,7 +127,8 @@ public final class LocalPathPlanner {
                 config.eatingEnabled(),
                 config.foodListMode(),
                 config.foods(),
-                config.eatAtFoodLevel()
+                config.eatAtFoodLevel(),
+                config.minimumBoatDistanceBlocks()
         );
         PathPlan safePlan = search(snapshot, routeStep, nonModifying, context);
         if (safePlan.outcome() != PathOutcome.NO_PATH

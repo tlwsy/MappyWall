@@ -2,13 +2,19 @@ package dev.mappywall.client;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import dev.mappywall.core.WaterTransitPolicy;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Objects;
 import java.util.Set;
 import net.fabricmc.loader.api.FabricLoader;
 
@@ -19,7 +25,11 @@ final class NavigationConfigStore {
     private AutoNavigationConfig aggressiveConfig;
 
     NavigationConfigStore() {
-        this.path = FabricLoader.getInstance().getConfigDir().resolve("mappywall").resolve("navigation.json");
+        this(FabricLoader.getInstance().getConfigDir().resolve("mappywall").resolve("navigation.json"));
+    }
+
+    NavigationConfigStore(Path path) {
+        this.path = Objects.requireNonNull(path, "path");
         this.aggressiveConfig = loadOrDefault();
     }
 
@@ -28,9 +38,18 @@ final class NavigationConfigStore {
     }
 
     void updateBreaking(boolean enabled, AutoNavigationConfig.ListMode mode, Set<String> blockIds) throws IOException {
+        updateNavigationSettings(enabled, mode, blockIds, aggressiveConfig.minimumBoatDistanceBlocks());
+    }
+
+    void updateNavigationSettings(
+            boolean breakingEnabled,
+            AutoNavigationConfig.ListMode mode,
+            Set<String> blockIds,
+            int minimumBoatDistanceBlocks
+    ) throws IOException {
         AutoNavigationConfig current = aggressiveConfig;
         AutoNavigationConfig candidate = new AutoNavigationConfig(
-                enabled,
+                breakingEnabled,
                 mode,
                 blockIds,
                 current.blockPlacingEnabled(),
@@ -39,15 +58,21 @@ final class NavigationConfigStore {
                 current.eatingEnabled(),
                 current.foodListMode(),
                 current.foods(),
-                current.eatAtFoodLevel()
+                current.eatAtFoodLevel(),
+                minimumBoatDistanceBlocks
         );
         save(candidate);
         aggressiveConfig = candidate;
     }
 
     void resetBreakingDefaults() throws IOException {
+        resetNavigationDefaults();
+    }
+
+    void resetNavigationDefaults() throws IOException {
         AutoNavigationConfig defaults = AutoNavigationConfig.aggressiveDefaults();
-        updateBreaking(defaults.blockBreakingEnabled(), defaults.breakListMode(), defaults.breakBlocks());
+        save(defaults);
+        aggressiveConfig = defaults;
     }
 
     private AutoNavigationConfig loadOrDefault() {
@@ -61,10 +86,32 @@ final class NavigationConfigStore {
             return defaults;
         }
         try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-            AutoNavigationConfig loaded = GSON.fromJson(reader, AutoNavigationConfig.class);
+            JsonObject object = JsonParser.parseReader(reader).getAsJsonObject();
+            object.addProperty(
+                    "minimumBoatDistanceBlocks",
+                    normalizedBoatDistance(object.get("minimumBoatDistanceBlocks"))
+            );
+            AutoNavigationConfig loaded = GSON.fromJson(object, AutoNavigationConfig.class);
             return loaded == null ? defaults : loaded;
         } catch (IOException | RuntimeException invalidConfig) {
             return defaults;
+        }
+    }
+
+    private int normalizedBoatDistance(JsonElement element) {
+        int fallback = WaterTransitPolicy.DEFAULT_MINIMUM_BOAT_DISTANCE_BLOCKS;
+        if (element == null || element.isJsonNull() || !element.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            BigDecimal decimal = element.getAsBigDecimal();
+            int value = decimal.intValueExact();
+            return Math.max(
+                    WaterTransitPolicy.MINIMUM_BOAT_DISTANCE_BLOCKS,
+                    Math.min(WaterTransitPolicy.MAXIMUM_BOAT_DISTANCE_BLOCKS, value)
+            );
+        } catch (ArithmeticException | NumberFormatException invalid) {
+            return fallback;
         }
     }
 
