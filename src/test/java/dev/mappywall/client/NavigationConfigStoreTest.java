@@ -1,6 +1,7 @@
 package dev.mappywall.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -41,6 +43,16 @@ class NavigationConfigStoreTest {
         assertEquals(1, loadDistance("-7"));
         assertEquals(128, loadDistance("129"));
         assertEquals(12, loadDistance("12.5"));
+    }
+
+    @Test
+    void integerAboveIntRangeClampsToSupportedMaximum() throws IOException {
+        assertEquals(128, loadDistance("2147483648"));
+    }
+
+    @Test
+    void integerBelowIntRangeClampsToSupportedMinimum() throws IOException {
+        assertEquals(1, loadDistance("-2147483649"));
     }
 
     @Test
@@ -87,6 +99,27 @@ class NavigationConfigStoreTest {
         assertEquals(Set.of("minecraft:bread"), loaded.foods());
         assertEquals(7, loaded.eatAtFoodLevel());
         assertEquals(41, loaded.minimumBoatDistanceBlocks());
+    }
+
+    @Test
+    void parentlessRelativePathRoundTrips() throws IOException {
+        Path path = Path.of(".navigation-config-test-" + UUID.randomUUID() + ".json");
+        try {
+            NavigationConfigStore store = assertDoesNotThrow(() -> new NavigationConfigStore(path));
+            AutoNavigationConfig current = store.aggressiveConfig();
+            store.updateNavigationSettings(
+                    current.blockBreakingEnabled(),
+                    current.breakListMode(),
+                    current.breakBlocks(),
+                    37
+            );
+
+            assertEquals(37, assertDoesNotThrow(() -> new NavigationConfigStore(path))
+                    .aggressiveConfig()
+                    .minimumBoatDistanceBlocks());
+        } finally {
+            Files.deleteIfExists(path);
+        }
     }
 
     private int loadDistance(String rawJsonNumber) throws IOException {
