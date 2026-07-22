@@ -121,13 +121,15 @@ public final class MappyWallRuntime {
         return navigationConfigStore.aggressiveConfig();
     }
 
-    boolean updateAggressiveBreakingConfig(
+    boolean updateAggressiveNavigationConfig(
             boolean enabled,
             AutoNavigationConfig.ListMode listMode,
-            Set<String> blockIds
+            Set<String> blockIds,
+            int minimumBoatDistanceBlocks
     ) {
         try {
-            navigationConfigStore.updateBreaking(enabled, listMode, blockIds);
+            navigationConfigStore.updateNavigationSettings(
+                    enabled, listMode, blockIds, minimumBoatDistanceBlocks);
             movementController.setAggressiveConfig(navigationConfigStore.aggressiveConfig());
             return true;
         } catch (IOException exception) {
@@ -135,9 +137,9 @@ public final class MappyWallRuntime {
         }
     }
 
-    boolean resetAggressiveBreakingConfig() {
+    boolean resetAggressiveNavigationConfig() {
         try {
-            navigationConfigStore.resetBreakingDefaults();
+            navigationConfigStore.resetNavigationDefaults();
             movementController.setAggressiveConfig(navigationConfigStore.aggressiveConfig());
             return true;
         } catch (IOException exception) {

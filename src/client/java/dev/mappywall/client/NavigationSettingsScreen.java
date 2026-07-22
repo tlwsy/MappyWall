@@ -2,6 +2,7 @@ package dev.mappywall.client;
 
 import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.stream.Collectors;
 import net.minecraft.ChatFormatting;
@@ -19,7 +20,9 @@ final class NavigationSettingsScreen extends Screen {
     private boolean breakingEnabled;
     private AutoNavigationConfig.ListMode listMode;
     private Set<String> blockIds;
+    private int minimumBoatDistanceBlocks;
     private EditBox blockListField;
+    private EditBox boatDistanceField;
     private Component status;
 
     NavigationSettingsScreen(MappyWallRuntime runtime, Screen parent) {
@@ -32,7 +35,7 @@ final class NavigationSettingsScreen extends Screen {
     @Override
     protected void init() {
         int left = this.width / 2 - 160;
-        int y = Math.max(28, this.height / 2 - 86);
+        int y = Math.max(28, this.height / 2 - 105);
 
         addRenderableWidget(Button.builder(breakingLabel(), button -> {
             breakingEnabled = !breakingEnabled;
@@ -62,36 +65,58 @@ final class NavigationSettingsScreen extends Screen {
         blockListField.setValue(formatIds(blockIds));
         addRenderableWidget(blockListField);
 
+        boatDistanceField = new EditBox(
+                this.font,
+                left + 252,
+                y + 64,
+                68,
+                20,
+                Component.translatable("screen.mappywall.navigation.boat_distance")
+        );
+        boatDistanceField.setMaxLength(3);
+        boatDistanceField.setValue(Integer.toString(minimumBoatDistanceBlocks));
+        boatDistanceField.setTooltip(Tooltip.create(Component.translatable(
+                "screen.mappywall.navigation.boat_distance_tooltip")));
+        addRenderableWidget(boatDistanceField);
+
         addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.navigation.save"), button -> {
+            OptionalInt parsedDistance = NavigationSettingsInput.parseMinimumBoatDistance(
+                    boatDistanceField.getValue());
+            if (parsedDistance.isEmpty()) {
+                status = Component.translatable("screen.mappywall.navigation.boat_distance_invalid")
+                        .withStyle(ChatFormatting.RED);
+                return;
+            }
             Set<String> parsed = parseIds(blockListField.getValue());
-            if (runtime.updateAggressiveBreakingConfig(breakingEnabled, listMode, parsed)) {
+            if (runtime.updateAggressiveNavigationConfig(
+                    breakingEnabled, listMode, parsed, parsedDistance.getAsInt())) {
                 blockIds = parsed;
+                minimumBoatDistanceBlocks = parsedDistance.getAsInt();
                 status = Component.translatable("screen.mappywall.navigation.saved").withStyle(ChatFormatting.GREEN);
             } else {
                 status = Component.translatable("screen.mappywall.navigation.save_failed").withStyle(ChatFormatting.RED);
             }
-        }).bounds(left, y + 72, 100, 20).build());
+        }).bounds(left, y + 96, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.navigation.reset"), button -> {
-            if (runtime.resetAggressiveBreakingConfig()) {
+            if (runtime.resetAggressiveNavigationConfig()) {
                 load(runtime.aggressiveNavigationConfig());
-                blockListField.setValue(formatIds(blockIds));
                 clearWidgets();
                 init();
                 status = Component.translatable("screen.mappywall.navigation.reset_done").withStyle(ChatFormatting.GREEN);
             } else {
                 status = Component.translatable("screen.mappywall.navigation.save_failed").withStyle(ChatFormatting.RED);
             }
-        }).bounds(left + 110, y + 72, 100, 20).build());
+        }).bounds(left + 110, y + 96, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.translatable("screen.mappywall.close"), button -> onClose())
-                .bounds(left + 220, y + 72, 100, 20)
+                .bounds(left + 220, y + 96, 100, 20)
                 .build());
     }
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
-        int y = Math.max(28, this.height / 2 - 86);
+        int y = Math.max(28, this.height / 2 - 105);
         graphics.centeredText(this.font, this.title, this.width / 2, y - 24, 0xFFFFFFFF);
         graphics.text(
                 this.font,
@@ -101,15 +126,23 @@ final class NavigationSettingsScreen extends Screen {
                 0xFFFFFFFF,
                 true
         );
+        graphics.text(
+                this.font,
+                Component.translatable("screen.mappywall.navigation.boat_distance"),
+                this.width / 2 - 160,
+                y + 69,
+                0xFFFFFFFF,
+                true
+        );
         graphics.centeredText(
                 this.font,
                 Component.translatable("screen.mappywall.navigation.priority_note").withStyle(ChatFormatting.GRAY),
                 this.width / 2,
-                y + 102,
+                y + 126,
                 0xFFFFFFFF
         );
         if (status != null) {
-            graphics.centeredText(this.font, status, this.width / 2, y + 116, 0xFFFFFFFF);
+            graphics.centeredText(this.font, status, this.width / 2, y + 140, 0xFFFFFFFF);
         }
         super.extractRenderState(graphics, mouseX, mouseY, partialTick);
     }
@@ -123,6 +156,7 @@ final class NavigationSettingsScreen extends Screen {
         breakingEnabled = config.blockBreakingEnabled();
         listMode = config.breakListMode();
         blockIds = config.breakBlocks();
+        minimumBoatDistanceBlocks = config.minimumBoatDistanceBlocks();
     }
 
     private Component breakingLabel() {
