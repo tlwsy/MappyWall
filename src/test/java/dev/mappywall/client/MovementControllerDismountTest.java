@@ -251,13 +251,17 @@ class MovementControllerDismountTest {
                 "boolean swimWaypoint = waypoint.action() == LocalPathPlanner.StepAction.SWIM;",
                 "if (tryEat(client, player)) {"
         );
-        assertEquals(1, occurrences(waypointDismount, "instanceof AbstractBoat"));
-        assertEquals(2, occurrences(waypointDismount, "vehicleIsBoat"));
+        assertEquals(2, occurrences(waypointDismount, "instanceof AbstractBoat"));
+        assertEquals(3, occurrences(waypointDismount, "vehicleIsBoat"));
         assertEquals(1, occurrences(waypointDismount, "shouldBeginVehicleDismountForWaypoint("));
         assertTrue(compact(waypointDismount).contains(
                 "shouldBeginVehicleDismountForWaypoint("
-                        + "player.isPassenger(),vehiclePresent,swimWaypoint,vehicleIsBoat,surfaceWaterRoute)"
+                        + "player.isPassenger(),vehiclePresent,swimWaypoint,vehicleIsBoat,boatableSwimRoute)"
                         + "&&beginVehicleDismountRecovery(client,player)"
+        ));
+        assertTrue(compact(waypointDismount).contains(
+                "isCompatibleResolvedBoatSurface(waterTransitPolicy.surfaceY(),"
+                        + "waypointSurfaceY,boatSurfaceY)"
         ));
 
         String begin = methodSource(
@@ -299,7 +303,9 @@ class MovementControllerDismountTest {
         assertFalse(keepShift.contains("sendNeutralInput("));
         assertFalse(keepShift.contains("sendPlayerInput("));
 
-        int nextWaypoint = source.indexOf("LocalPathPlanner.PathStep waypoint = nextWaypoint(player)");
+        int nextWaypoint = source.indexOf(
+                "LocalPathPlanner.PathStep waypoint = nextWaypoint(client, player)"
+        );
         int nonSwimBegin = source.indexOf("beginVehicleDismountRecovery(client, player)", nextWaypoint);
         int eat = source.indexOf("tryEat(client, player)", nonSwimBegin);
         int chunkSafety = source.indexOf("isStepChunkReady(client, waypoint)", eat);

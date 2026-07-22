@@ -15,9 +15,11 @@ import dev.mappywall.core.PathSegmentCoordinator.PreviewPolicy;
 import dev.mappywall.core.RouteStep;
 import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.RunMode;
+import dev.mappywall.core.WaterTransitPolicy;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -40,6 +42,7 @@ import net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket;
 import net.minecraft.network.protocol.game.ServerboundPaddleBoatPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
@@ -149,6 +152,8 @@ public final class MovementController {
     private final InitialPathPlanPreparer initialPathPlanPreparer = new InitialPathPlanPreparer();
     private final PathSegmentCoordinator<LocalPathPlanner.PathStep> pathSegments =
             new PathSegmentCoordinator<>();
+    private final WaterTransitPolicy waterTransitPolicy = new WaterTransitPolicy();
+    private final WaterRouteEvidenceAdapter waterRouteEvidenceAdapter = new WaterRouteEvidenceAdapter();
     private final NavigationPlanningRetryState planningRetry =
             new NavigationPlanningRetryState(PLANNING_CADENCE);
     private final ArrayDeque<MovementSample> movementSamples = new ArrayDeque<>();
@@ -192,6 +197,14 @@ public final class MovementController {
     private int movementSampleTick;
     private BlockPos dismountEgress;
     private double lastDismountEgressDistance = Double.POSITIVE_INFINITY;
+    private WaterTransitPolicy.TravelDecision currentWaterTravelDecision =
+            WaterTransitPolicy.TravelDecision.SWIM;
+    private BlockPos waterRunAnchor;
+    private OptionalInt waterRunAnchorSurfaceY = OptionalInt.empty();
+    private BlockPos waterReplanAnchor;
+    private boolean waterReplanContinuityPending;
+    private WaterRouteEvidenceAdapter.Evidence currentWaterEvidence =
+            WaterRouteEvidenceAdapter.Evidence.none();
 
     public MovementController() {
         this(AutoNavigationConfig.aggressiveDefaults());
@@ -202,8 +215,14 @@ public final class MovementController {
     }
 
     public void setAggressiveConfig(AutoNavigationConfig aggressiveConfig) {
-        this.aggressiveConfig = Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+        AutoNavigationConfig requestedConfig = Objects.requireNonNull(aggressiveConfig, "aggressiveConfig");
+        boolean minimumBoatDistanceChanged = this.aggressiveConfig.minimumBoatDistanceBlocks()
+                != requestedConfig.minimumBoatDistanceBlocks();
+        this.aggressiveConfig = requestedConfig;
         consecutiveNoPathFailures = 0;
+        if (minimumBoatDistanceChanged && automationStyle == AutomationStyle.AGGRESSIVE) {
+            resetWaterTransit();
+        }
         forceLocalReplan();
     }
 
@@ -214,7 +233,7 @@ public final class MovementController {
             return MovementResult.none();
         }
 
-        automationStyle = save.project().automationStyle();
+        updateAutomationStyle(save.project().automationStyle());
         waitingForChunk = false;
         resetBreakBudgetIfTargetChanged(target);
         if (save.project().mode() == RunMode.AUTO_ELYTRA) {
@@ -270,7 +289,7 @@ public final class MovementController {
         // the boat-to-land seam. This lets consecutive SWIM cells expose the first
         // non-SWIM step, but no step execution, progress, or stall work runs before
         // recovery begins and clears the path.
-        LocalPathPlanner.PathStep waypoint = nextWaypoint(player);
+        LocalPathPlanner.PathStep waypoint = nextWaypoint(client, player);
         startEligibleLookahead(client, target);
         startInitialCaptureIfNeeded(client, target);
         if (waypoint == null) {
@@ -289,15 +308,28 @@ public final class MovementController {
         }
 
         boolean swimWaypoint = waypoint.action() == LocalPathPlanner.StepAction.SWIM;
-        boolean vehiclePresent = player.getVehicle() != null;
-        boolean vehicleIsBoat = player.getVehicle() instanceof AbstractBoat;
-        boolean surfaceWaterRoute = swimWaypoint && isSurfaceWaterRoute(client, waypoint.pos());
+        Entity vehicle = player.getVehicle();
+        boolean vehiclePresent = vehicle != null;
+        boolean vehicleIsBoat = vehicle instanceof AbstractBoat;
+        WaterRouteEvidenceAdapter.ResolvedSurface waypointSurface = swimWaypoint
+                ? waterRouteEvidenceAdapter.resolveBoatableSurface(client, waypoint.pos()).orElse(null)
+                : null;
+        OptionalInt waypointSurfaceY = waypointSurface == null
+                ? OptionalInt.empty()
+                : OptionalInt.of(waypointSurface.waterPos().getY());
+        OptionalInt boatSurfaceY = vehicle instanceof AbstractBoat boat
+                ? waterRouteEvidenceAdapter.resolveBoatSurfaceY(client, boat)
+                : OptionalInt.empty();
+        boolean boatableSwimRoute = swimWaypoint
+                && vehicleIsBoat
+                && isCompatibleResolvedBoatSurface(
+                        waterTransitPolicy.surfaceY(), waypointSurfaceY, boatSurfaceY);
         if (shouldBeginVehicleDismountForWaypoint(
                         player.isPassenger(),
                         vehiclePresent,
                         swimWaypoint,
                         vehicleIsBoat,
-                        surfaceWaterRoute
+                        boatableSwimRoute
                 )
                 && beginVehicleDismountRecovery(client, player)) {
             return MovementResult.active(pathSnapshot());
@@ -372,6 +404,7 @@ public final class MovementController {
         consecutiveNoPathFailures = 0;
         dismountRecovery.cancel();
         resetDismountEgressProgress(null, null);
+        resetWaterTransit();
     }
 
     public void hardReset(Minecraft client) {
@@ -401,6 +434,15 @@ public final class MovementController {
 
     public boolean isDismountRecovering() {
         return dismountRecovery.active();
+    }
+
+    private void updateAutomationStyle(AutomationStyle requestedStyle) {
+        Objects.requireNonNull(requestedStyle, "requestedStyle");
+        if (automationStyle != requestedStyle) {
+            automationStyle = requestedStyle;
+            resetWaterTransit();
+            forceLocalReplan();
+        }
     }
 
     private AutoNavigationConfig navigationConfig() {
@@ -1079,14 +1121,16 @@ public final class MovementController {
 
     private MovementResult swimOrBoat(Minecraft client, LocalPlayer player, LocalPathPlanner.PathStep waypoint) {
         AutomationStyle style = currentAutomationStyle();
-        boolean surfaceRoute = isSurfaceWaterRoute(client, waypoint.pos());
-        if (player.isPassenger()) {
-            Entity vehicle = player.getVehicle();
-            if (vehicle instanceof AbstractBoat boat) {
+        if (currentWaterTravelDecision == WaterTransitPolicy.TravelDecision.CONTINUE_RIDING) {
+            if (player.getVehicle() instanceof AbstractBoat boat) {
                 return driveBoatToward(client, player, boat, waypoint, style);
             }
-        } else {
-            if (surfaceRoute && client.gui.screen() == null) {
+            return swimToward(client, player, waypoint);
+        }
+        if (currentWaterTravelDecision == WaterTransitPolicy.TravelDecision.ACQUIRE_BOAT) {
+            if (!player.isPassenger()
+                    && isSurfaceWaterRoute(client, waypoint.pos())
+                    && client.gui.screen() == null) {
                 if (tryBoardNearbyBoat(client, player, waypoint.pos(), style)) {
                     return MovementResult.active(pathSnapshot());
                 }
@@ -1821,6 +1865,7 @@ public final class MovementController {
         activeStepTicks = 0;
         actionAcknowledged = false;
         dropCommitted = false;
+        resetWaterTransit();
     }
 
     private void advancePendingCapture() {
@@ -2124,29 +2169,176 @@ public final class MovementController {
         return new BlockPos(anchor.x(), anchor.y(), anchor.z());
     }
 
-    private LocalPathPlanner.PathStep nextWaypoint(LocalPlayer player) {
+    private LocalPathPlanner.PathStep nextWaypoint(Minecraft client, LocalPlayer player) {
         while (true) {
             LocalPathPlanner.PathStep step = pathSegments.currentStepOrPromote().orElse(null);
             if (step == null) {
                 return null;
             }
+            if (step.action() != LocalPathPlanner.StepAction.SWIM) {
+                waterTransitPolicy.leaveWaterRun();
+                currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
+                waterRunAnchor = null;
+                waterRunAnchorSurfaceY = OptionalInt.empty();
+                waterReplanAnchor = null;
+                waterReplanContinuityPending = false;
+                currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+            } else {
+                currentWaterTravelDecision = refreshWaterEvidence(client, player);
+            }
             if (step.action() == LocalPathPlanner.StepAction.BREAK
                     || step.action() == LocalPathPlanner.StepAction.PLACE) {
                 return step;
             }
-            if (isAtWaypoint(player, step)) {
-                advancePathStep();
+            if (isAtWaypoint(client, player, step)) {
+                boolean advanced = advancePathStep();
+                if (advanced && step.action() == LocalPathPlanner.StepAction.SWIM) {
+                    recordCompletedSwimStep(client, player, step);
+                }
                 continue;
             }
             return step;
         }
     }
 
-    private boolean isAtWaypoint(LocalPlayer player, LocalPathPlanner.PathStep step) {
+    private void recordCompletedSwimStep(
+            Minecraft client,
+            LocalPlayer player,
+            LocalPathPlanner.PathStep step
+    ) {
+        WaterRouteEvidenceAdapter.ResolvedSurface resolved = waterRouteEvidenceAdapter
+                .resolveBoatableSurface(client, step.pos())
+                .orElse(null);
+        if (resolved == null) {
+            waterTransitPolicy.leaveWaterRun();
+            currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
+            waterRunAnchor = null;
+            waterRunAnchorSurfaceY = OptionalInt.empty();
+            waterReplanAnchor = null;
+            waterReplanContinuityPending = false;
+            currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+            return;
+        }
+        BlockPos anchor = waterRunAnchor == null
+                ? navigationFeetResolver.resolve(player)
+                : waterRunAnchor;
+        int dx = Math.abs(step.pos().getX() - anchor.getX());
+        int dz = Math.abs(step.pos().getZ() - anchor.getZ());
+        boolean knownLoadedNonWaterAnchor = client.level != null
+                && client.level.hasChunkAt(anchor)
+                && !client.level.getFluidState(anchor).is(FluidTags.WATER);
+        if (dx <= 1
+                && dz <= 1
+                && dx + dz > 0
+                && shouldCountCompletedWaterEdge(
+                        waterRunAnchorSurfaceY,
+                        resolved.waterPos().getY(),
+                        knownLoadedNonWaterAnchor
+                )) {
+            waterTransitPolicy.recordCompletedEdge(
+                    resolved.waterPos().getY(), Math.hypot(dx, dz));
+        }
+        waterRunAnchor = step.pos();
+        waterRunAnchorSurfaceY = OptionalInt.of(resolved.waterPos().getY());
+    }
+
+    static boolean shouldCountCompletedWaterEdge(
+            OptionalInt anchorSurfaceY,
+            int completedSurfaceY,
+            boolean knownLoadedNonWaterAnchor
+    ) {
+        Objects.requireNonNull(anchorSurfaceY, "anchorSurfaceY");
+        return anchorSurfaceY.isPresent()
+                ? anchorSurfaceY.getAsInt() == completedSurfaceY
+                : knownLoadedNonWaterAnchor;
+    }
+
+    private WaterTransitPolicy.TravelDecision refreshWaterEvidence(
+            Minecraft client,
+            LocalPlayer player
+    ) {
+        if (waterRunAnchor == null) {
+            BlockPos candidate = navigationFeetResolver.resolve(player);
+            OptionalInt candidateSurfaceY = waterRouteEvidenceAdapter
+                    .resolveBoatableSurface(client, candidate)
+                    .map(surface -> OptionalInt.of(surface.waterPos().getY()))
+                    .orElseGet(OptionalInt::empty);
+            if (waterReplanContinuityPending
+                    && !canPreserveWaterRunAcrossReplan(
+                            waterReplanAnchor,
+                            candidate,
+                            waterTransitPolicy.surfaceY(),
+                            candidateSurfaceY
+                    )) {
+                waterTransitPolicy.leaveWaterRun();
+            }
+            waterRunAnchor = candidate;
+            waterRunAnchorSurfaceY = candidateSurfaceY;
+            waterReplanAnchor = null;
+            waterReplanContinuityPending = false;
+        }
+
+        double remainingProof = Math.max(
+                1.0e-9,
+                navigationConfig().minimumBoatDistanceBlocks()
+                        - waterTransitPolicy.completedDistanceBlocks()
+        );
+        currentWaterEvidence = waterRouteEvidenceAdapter.collect(
+                client,
+                waterRunAnchor,
+                pathSegments.previewStepSnapshot(),
+                remainingProof
+        );
+        return waterTransitPolicy.observe(new WaterTransitPolicy.RunObservation(
+                currentWaterEvidence.surfaceY(),
+                currentWaterEvidence.futureConfirmedDistanceBlocks(),
+                navigationConfig().minimumBoatDistanceBlocks(),
+                player.getVehicle() instanceof AbstractBoat
+        ));
+    }
+
+    static boolean canPreserveWaterRunAcrossReplan(
+            BlockPos previousAnchor,
+            BlockPos currentAnchor,
+            OptionalInt previousSurfaceY,
+            OptionalInt currentSurfaceY
+    ) {
+        if (previousAnchor == null || currentAnchor == null) {
+            return false;
+        }
+        Objects.requireNonNull(previousSurfaceY, "previousSurfaceY");
+        Objects.requireNonNull(currentSurfaceY, "currentSurfaceY");
+        int dx = Math.abs(previousAnchor.getX() - currentAnchor.getX());
+        int dz = Math.abs(previousAnchor.getZ() - currentAnchor.getZ());
+        return dx <= 1
+                && dz <= 1
+                && previousSurfaceY.isPresent()
+                && currentSurfaceY.isPresent()
+                && previousSurfaceY.getAsInt() == currentSurfaceY.getAsInt();
+    }
+
+    private boolean isAtWaypoint(Minecraft client, LocalPlayer player, LocalPathPlanner.PathStep step) {
         BlockPos pos = step.pos();
         double dx = pos.getX() + 0.5 - player.getX();
         double dz = pos.getZ() + 0.5 - player.getZ();
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+        AbstractBoat boat = player.getVehicle() instanceof AbstractBoat currentBoat
+                ? currentBoat
+                : null;
+        OptionalInt waypointSurfaceY = step.action() == LocalPathPlanner.StepAction.SWIM
+                ? waterRouteEvidenceAdapter.resolveBoatableSurface(client, pos)
+                        .map(surface -> OptionalInt.of(surface.waterPos().getY()))
+                        .orElseGet(OptionalInt::empty)
+                : OptionalInt.empty();
+        OptionalInt boatSurfaceY = boat == null
+                ? OptionalInt.empty()
+                : waterRouteEvidenceAdapter.resolveBoatSurfaceY(client, boat);
+        boolean compatibleBoatableSurface = isCompatibleResolvedBoatSurface(
+                waterTransitPolicy.surfaceY(), waypointSurfaceY, boatSurfaceY);
+        if (step.action() == LocalPathPlanner.StepAction.SWIM && boat != null) {
+            return isResolvedBoatSwimWaypointComplete(
+                    horizontalDistance, true, compatibleBoatableSurface);
+        }
         return evaluateWaypointCompletion(
                 step.action(),
                 horizontalDistance,
@@ -2157,6 +2349,31 @@ public final class MovementController {
                 player.getVehicle() instanceof AbstractBoat,
                 () -> navigationFeetResolver.resolveWaypointY(player)
         );
+    }
+
+    static boolean isCompatibleResolvedBoatSurface(
+            OptionalInt waterRunSurfaceY,
+            OptionalInt waypointSurfaceY,
+            OptionalInt boatSurfaceY
+    ) {
+        Objects.requireNonNull(waterRunSurfaceY, "waterRunSurfaceY");
+        Objects.requireNonNull(waypointSurfaceY, "waypointSurfaceY");
+        Objects.requireNonNull(boatSurfaceY, "boatSurfaceY");
+        return waterRunSurfaceY.isPresent()
+                && waypointSurfaceY.isPresent()
+                && boatSurfaceY.isPresent()
+                && waterRunSurfaceY.getAsInt() == waypointSurfaceY.getAsInt()
+                && waypointSurfaceY.getAsInt() == boatSurfaceY.getAsInt();
+    }
+
+    static boolean isResolvedBoatSwimWaypointComplete(
+            double horizontalDistance,
+            boolean inBoat,
+            boolean compatibleBoatableSurface
+    ) {
+        return inBoat
+                && compatibleBoatableSurface
+                && horizontalDistance <= SWIM_WAYPOINT_DISTANCE_BLOCKS;
     }
 
     static boolean evaluateWaypointCompletion(
@@ -2212,8 +2429,9 @@ public final class MovementController {
         };
     }
 
-    private void advancePathStep() {
-        if (pathSegments.advance()) {
+    private boolean advancePathStep() {
+        boolean advanced = pathSegments.advance();
+        if (advanced) {
             currentStepOrdinal++;
         }
         activeStepSignature = null;
@@ -2224,6 +2442,7 @@ public final class MovementController {
         pendingPlacementTicks = 0;
         actionAcknowledged = false;
         dropCommitted = false;
+        return advanced;
     }
 
     private void updateProgress(LocalPlayer player, RouteStep target, LocalPathPlanner.PathStep waypoint) {
@@ -2336,6 +2555,13 @@ public final class MovementController {
         actionAcknowledged = false;
         dropCommitted = false;
         movementSamples.clear();
+        if (!waterReplanContinuityPending && waterTransitPolicy.surfaceY().isPresent()) {
+            waterReplanAnchor = waterRunAnchor;
+            waterReplanContinuityPending = true;
+        }
+        waterRunAnchor = null;
+        waterRunAnchorSurfaceY = OptionalInt.empty();
+        currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
     }
 
     private double squaredHorizontalDistance(LocalPlayer player, BlockPos pos) {
@@ -3114,6 +3340,7 @@ public final class MovementController {
         waitingForChunk = false;
         movementSamples.clear();
         movementSampleTick = 0;
+        resetWaterTransit();
     }
 
     static boolean shouldBeginVehicleDismountAtArrival(boolean passenger, boolean vehiclePresent) {
@@ -3125,11 +3352,11 @@ public final class MovementController {
             boolean vehiclePresent,
             boolean swimWaypoint,
             boolean vehicleIsBoat,
-            boolean surfaceWaterRoute
+            boolean boatableSwimRoute
     ) {
         return passenger
                 && vehiclePresent
-                && (!swimWaypoint || vehicleIsBoat && !surfaceWaterRoute);
+                && (!swimWaypoint || vehicleIsBoat && !boatableSwimRoute);
     }
 
     static DismountTerminalOutcome applyDismountTerminalEffects(
@@ -3332,6 +3559,16 @@ public final class MovementController {
         }
     }
 
+    private void resetWaterTransit() {
+        waterTransitPolicy.reset();
+        currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
+        waterRunAnchor = null;
+        waterRunAnchorSurfaceY = OptionalInt.empty();
+        waterReplanAnchor = null;
+        waterReplanContinuityPending = false;
+        currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+    }
+
     private void resetProgress() {
         cancelPendingPlan();
         pathSegments.clear();
@@ -3362,6 +3599,7 @@ public final class MovementController {
         eatCooldown = 0;
         elytraStartCooldown = 0;
         fireworkCooldown = 0;
+        resetWaterTransit();
     }
 
     private void resetBreakBudgetIfTargetChanged(RouteStep target) {
