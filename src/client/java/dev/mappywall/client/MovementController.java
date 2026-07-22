@@ -1521,10 +1521,10 @@ public final class MovementController {
                 ? acceptedApproachSurfaceForBoat(
                         client, boatAcquisitionPolicy.selectedBoatId().getAsInt())
                 : Optional.empty();
-        Optional<BlockPos> holdSurface = pendingBoatPlacementSurface != null
-                ? Optional.of(pendingBoatPlacementSurface)
-                : selectedBoatSurface.isPresent()
-                        ? selectedBoatSurface
+        Optional<BlockPos> holdSurface = selectedBoatSurface.isPresent()
+                ? selectedBoatSurface
+                : pendingBoatPlacementSurface != null
+                        ? Optional.of(pendingBoatPlacementSurface)
                         : routeBoatSurface.isPresent() ? routeBoatSurface : resolvedSurface;
         boolean acquisitionResourceAvailable = heldBoat
                 || carriedBoat
@@ -1560,11 +1560,11 @@ public final class MovementController {
     ) {
         Objects.requireNonNull(selectedBoatId, "selectedBoatId");
         Objects.requireNonNull(routeBoatId, "routeBoatId");
+        if (selectedSurfaceAvailable && selectedBoatId.isPresent()) {
+            return pendingPlacement ? 0 : selectedBoatId.getAsInt();
+        }
         if (pendingPlacement) {
             return 0;
-        }
-        if (selectedSurfaceAvailable && selectedBoatId.isPresent()) {
-            return selectedBoatId.getAsInt();
         }
         if (routeSurfaceAvailable && routeBoatId.isPresent()) {
             return routeBoatId.getAsInt();

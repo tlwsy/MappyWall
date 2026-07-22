@@ -342,8 +342,8 @@ class MovementControllerWaterTransitTest {
         int pending = acquisition.indexOf("pendingBoatPlacementSurface != null", hold);
         int selected = acquisition.indexOf("selectedBoatSurface.isPresent()", hold);
         int route = acquisition.indexOf("routeBoatSurface.isPresent()", hold);
-        assertTrue(hold >= 0 && hold < pending);
-        assertTrue(pending < selected && selected < route);
+        assertTrue(hold >= 0 && hold < selected);
+        assertTrue(selected < pending && pending < route);
         assertTrue(acquisition.contains("surfaceApproachCandidateId("));
     }
 
