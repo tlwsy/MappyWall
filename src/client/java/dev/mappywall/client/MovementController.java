@@ -216,6 +216,8 @@ public final class MovementController {
     private double lastBoatSurfaceVerticalDistance = Double.MAX_VALUE;
     private int boatSurfaceApproachCandidateId;
     private int lastBoatSurfaceApproachCandidateId;
+    private boolean boatSurfaceCandidatePhysicallyReachable;
+    private boolean boatSurfaceInteractionDeferredByGui;
     private int routeBoatApproachStallTicks;
     private int routeBoatBackoffEntityId;
     private int routeBoatBackoffTicks;
@@ -828,6 +830,8 @@ public final class MovementController {
                 && boatSurfaceApproachTarget != null;
         boatSurfaceApproachTarget = null;
         boatSurfaceApproachCandidateId = 0;
+        boatSurfaceCandidatePhysicallyReachable = false;
+        boatSurfaceInteractionDeferredByGui = false;
         if (!trackStep(waypoint, continuingBoatSurfaceApproach)) {
             boolean movementAction = isMovementAction(waypoint.action());
             if (movementAction) {
@@ -1278,20 +1282,38 @@ public final class MovementController {
             LocalPlayer player,
             Optional<RouteBoatCandidate> candidate
     ) {
-        if (client.level == null || candidate.isEmpty()) {
+        if (candidate.isEmpty()) {
             return OptionalInt.empty();
         }
-        Entity entity = client.level.getEntity(candidate.orElseThrow().entityId());
-        if (!(entity instanceof AbstractBoat boat)
-                || !boat.isAlive()
-                || !boat.getPassengers().isEmpty()
-                || !shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)
-                || player.getEyePosition().distanceToSqr(boat.position())
-                        > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
-                || !player.hasLineOfSight(boat)) {
+        int candidateId = candidate.orElseThrow().entityId();
+        if (!isRouteBoatPhysicallyReachable(client, player, candidateId)) {
             return OptionalInt.empty();
         }
-        return OptionalInt.of(boat.getId());
+        return OptionalInt.of(candidateId);
+    }
+
+    private boolean isRouteBoatPhysicallyReachable(
+            Minecraft client,
+            LocalPlayer player,
+            int candidateId
+    ) {
+        if (client.level == null || candidateId <= 0) {
+            return false;
+        }
+        Entity entity = client.level.getEntity(candidateId);
+        return entity instanceof AbstractBoat boat
+                && acceptedApproachSurfaceForBoat(client, boat).isPresent()
+                && player.getEyePosition().distanceToSqr(boat.position())
+                        <= BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
+                && player.hasLineOfSight(boat);
+    }
+
+    static OptionalInt boatAvailableForInteraction(
+            boolean transactionAvailable,
+            OptionalInt physicallyReachableBoat
+    ) {
+        Objects.requireNonNull(physicallyReachableBoat, "physicallyReachableBoat");
+        return transactionAvailable ? physicallyReachableBoat : OptionalInt.empty();
     }
 
     private boolean interactWithBoat(Minecraft client, LocalPlayer player, int selectedBoatId) {
@@ -1452,9 +1474,10 @@ public final class MovementController {
         boolean heldBoat = player.getMainHandItem().getItem() instanceof BoatItem;
         boolean carriedBoat = findBoat(player) >= 0;
         Optional<RouteBoatCandidate> routeBoat = findRouteAdjacentEligibleBoat(client, player);
-        OptionalInt nearbyBoat = transactionAvailable
-                ? reachableBoatFromCandidate(client, player, routeBoat)
-                : OptionalInt.empty();
+        OptionalInt physicallyReachableBoat = reachableBoatFromCandidate(
+                client, player, routeBoat);
+        OptionalInt nearbyBoat = boatAvailableForInteraction(
+                transactionAvailable, physicallyReachableBoat);
         Optional<BlockPos> routeBoatSurface = routeBoat.map(RouteBoatCandidate::approachSurface);
         OptionalInt newBoat = findNewPlacementBoat(client);
 
@@ -1546,6 +1569,9 @@ public final class MovementController {
                     routeBoatId,
                     routeBoatSurface.isPresent()
             );
+            boatSurfaceCandidatePhysicallyReachable = isRouteBoatPhysicallyReachable(
+                    client, player, boatSurfaceApproachCandidateId);
+            boatSurfaceInteractionDeferredByGui = client.gui.screen() != null;
             return swimTowardBoatSurface(client, player, holdSurface.orElseThrow());
         }
         return swimToward(client, player, waypoint);
@@ -1629,6 +1655,26 @@ public final class MovementController {
                 && candidateId <= 0
                 && horizontalDistance <= SWIM_WAYPOINT_DISTANCE_BLOCKS
                 && verticalDistance <= 0.35;
+    }
+
+    static boolean isStableBoatSurfaceHold(
+            BlockPos surfaceTarget,
+            int candidateId,
+            boolean candidatePhysicallyReachable,
+            boolean interactionDeferredByGui,
+            double horizontalDistance,
+            double verticalDistance,
+            boolean horizontalCollision
+    ) {
+        if (surfaceTarget == null
+                || horizontalDistance > SWIM_WAYPOINT_DISTANCE_BLOCKS
+                || verticalDistance > 0.35) {
+            return false;
+        }
+        return candidateId <= 0
+                || (candidatePhysicallyReachable
+                        && interactionDeferredByGui
+                        && !horizontalCollision);
     }
 
     static boolean shouldBackoffRouteBoat(
@@ -2876,8 +2922,11 @@ public final class MovementController {
         boolean stableSurfaceHold = isStableBoatSurfaceHold(
                 boatSurfaceApproachTarget,
                 boatSurfaceApproachCandidateId,
+                boatSurfaceCandidatePhysicallyReachable,
+                boatSurfaceInteractionDeferredByGui,
                 boatSurfaceHorizontalDistance,
-                boatSurfaceVerticalDistance
+                boatSurfaceVerticalDistance,
+                player.horizontalCollision
         );
         madeProgress = madeProgress || boatSurfaceProgress;
         double nextBoatSurfaceBestDistance = nextBoatSurfaceBestDistance(
@@ -2923,7 +2972,7 @@ public final class MovementController {
                 boatSurfaceApproachCandidateId,
                 lastBoatSurfaceApproachCandidateId,
                 surfaceApproachActive,
-                madeProgress,
+                madeProgress || stableSurfaceHold,
                 routeBoatApproachStallTicks
         );
         lastBoatSurfaceApproachCandidateId = boatSurfaceApproachCandidateId;
@@ -2931,7 +2980,7 @@ public final class MovementController {
         if (shouldBackoffRouteBoat(
                 boatSurfaceApproachCandidateId,
                 surfaceApproachActive,
-                madeProgress,
+                madeProgress || stableSurfaceHold,
                 routeBoatApproachStallTicks,
                 horizontalCollisionTicks
         )) {
@@ -2940,6 +2989,8 @@ public final class MovementController {
             horizontalCollisionTicks = 0;
             boatSurfaceApproachTarget = null;
             boatSurfaceApproachCandidateId = 0;
+            boatSurfaceCandidatePhysicallyReachable = false;
+            boatSurfaceInteractionDeferredByGui = false;
             return;
         }
 
@@ -4057,6 +4108,8 @@ public final class MovementController {
         lastBoatSurfaceVerticalDistance = Double.MAX_VALUE;
         boatSurfaceApproachCandidateId = 0;
         lastBoatSurfaceApproachCandidateId = 0;
+        boatSurfaceCandidatePhysicallyReachable = false;
+        boatSurfaceInteractionDeferredByGui = false;
         routeBoatApproachStallTicks = 0;
         routeBoatBackoffEntityId = 0;
         routeBoatBackoffTicks = 0;

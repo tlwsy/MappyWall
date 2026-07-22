@@ -323,6 +323,110 @@ class MovementControllerWaterTransitTest {
     }
 
     @Test
+    void reachedReachableRouteBoatWaitsThroughLongGuiDeferralWithoutBackoff()
+            throws IOException {
+        BlockPos surface = new BlockPos(0, 64, 0);
+        boolean stableHold = MovementController.isStableBoatSurfaceHold(
+                surface, 41, true, true, 0.42, 0.35, false);
+        assertTrue(stableHold);
+
+        int previousCandidateId = 0;
+        int stalledTicks = 0;
+        for (int tick = 0; tick < 1_081; tick++) {
+            stalledTicks = MovementController.nextRouteBoatApproachStallTicks(
+                    41, previousCandidateId, true, stableHold, stalledTicks);
+            assertFalse(MovementController.shouldBackoffRouteBoat(
+                    41, true, stableHold, stalledTicks, 0), "GUI tick " + tick);
+            previousCandidateId = 41;
+        }
+        assertEquals(0, stalledTicks);
+
+        String progress = methodSource(
+                controllerSource(),
+                "private void updateProgress(",
+                "private boolean isMovementAction("
+        );
+        String compactProgress = compact(progress);
+        assertTrue(compactProgress.contains(
+                "boatSurfaceCandidatePhysicallyReachable,"));
+        assertTrue(compactProgress.contains("boatSurfaceInteractionDeferredByGui,"));
+        assertTrue(compactProgress.contains("madeProgress||stableSurfaceHold"));
+    }
+
+    @Test
+    void guiDeferralDoesNotHideUnreachedUnreachableOrCollisionBlockedBoat() {
+        BlockPos surface = new BlockPos(0, 64, 0);
+        assertFalse(MovementController.isStableBoatSurfaceHold(
+                surface, 41, true, true, 0.4201, 0.35, false));
+        assertFalse(MovementController.isStableBoatSurfaceHold(
+                surface, 41, false, true, 0.42, 0.35, false));
+        assertFalse(MovementController.isStableBoatSurfaceHold(
+                surface, 41, true, false, 0.42, 0.35, false));
+        assertFalse(MovementController.isStableBoatSurfaceHold(
+                surface, 41, true, true, 0.42, 0.35, true));
+        assertFalse(MovementController.isStableBoatSurfaceHold(
+                null, 41, true, true, 0.0, 0.0, false));
+
+        int previousCandidateId = 0;
+        int stalledTicks = 0;
+        for (int tick = 0; tick < 1_081; tick++) {
+            stalledTicks = MovementController.nextRouteBoatApproachStallTicks(
+                    41, previousCandidateId, true, false, stalledTicks);
+            previousCandidateId = 41;
+        }
+        assertTrue(stalledTicks >= 90);
+        assertTrue(MovementController.shouldBackoffRouteBoat(
+                41, true, false, stalledTicks, 0));
+        assertTrue(MovementController.shouldBackoffRouteBoat(
+                41, true, false, 0, 8));
+    }
+
+    @Test
+    void closingGuiRestoresAcceptedRouteBoatPriorityBeforeInventoryBoat()
+            throws IOException {
+        dev.mappywall.core.BoatAcquisitionPolicy policy =
+                new dev.mappywall.core.BoatAcquisitionPolicy();
+        OptionalInt physicallyReachableBoat = OptionalInt.of(41);
+        for (int tick = 0; tick < 1_081; tick++) {
+            OptionalInt interactionBoat = MovementController.boatAvailableForInteraction(
+                    false, physicallyReachableBoat);
+            dev.mappywall.core.BoatAcquisitionPolicy.Decision decision = policy.tick(
+                    new dev.mappywall.core.BoatAcquisitionPolicy.Observation(
+                            true, false, false, true, true, true, true,
+                            interactionBoat, OptionalInt.empty(), false));
+            assertEquals(dev.mappywall.core.BoatAcquisitionPolicy.Action.NONE,
+                    decision.action());
+            assertEquals(Phase.IDLE, policy.phase());
+        }
+
+        OptionalInt interactionBoat = MovementController.boatAvailableForInteraction(
+                true, physicallyReachableBoat);
+        dev.mappywall.core.BoatAcquisitionPolicy.Decision decision = policy.tick(
+                new dev.mappywall.core.BoatAcquisitionPolicy.Observation(
+                        true, true, false, true, true, true, true,
+                        interactionBoat, OptionalInt.empty(), false));
+        assertEquals(dev.mappywall.core.BoatAcquisitionPolicy.Action.BOARD_SELECTED_BOAT,
+                decision.action());
+        assertEquals(41, decision.boatEntityId().orElseThrow());
+
+        String acquisition = methodSource(
+                controllerSource(),
+                "private MovementResult acquireBoatOrSwim(",
+                "static boolean shouldHoldBoatAcquisitionSurface("
+        );
+        String compactAcquisition = compact(acquisition);
+        assertTrue(compactAcquisition.contains(
+                "OptionalIntphysicallyReachableBoat=reachableBoatFromCandidate("));
+        assertTrue(compactAcquisition.contains(
+                "OptionalIntnearbyBoat=boatAvailableForInteraction("
+                        + "transactionAvailable,physicallyReachableBoat);"));
+        assertTrue(compactAcquisition.contains(
+                "boatSurfaceCandidatePhysicallyReachable="));
+        assertTrue(compactAcquisition.contains(
+                "boatSurfaceInteractionDeferredByGui=client.gui.screen()!=null;"));
+    }
+
+    @Test
     void surfaceApproachCandidateMatchesTheSelectedHoldSource() throws IOException {
         assertEquals(0, MovementController.surfaceApproachCandidateId(
                 true, OptionalInt.of(41), true, OptionalInt.of(42), true));
