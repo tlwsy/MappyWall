@@ -2,6 +2,7 @@ package dev.mappywall.client;
 
 import dev.mappywall.client.LocalPathPlanner.ContinuationContext;
 import dev.mappywall.core.AutomationStyle;
+import dev.mappywall.core.BoatAcquisitionPolicy;
 import dev.mappywall.core.BoatDismountRecovery;
 import dev.mappywall.core.BoatDismountRecovery.Action;
 import dev.mappywall.core.BoatDismountRecovery.Observation;
@@ -17,8 +18,11 @@ import dev.mappywall.core.RouteStepState;
 import dev.mappywall.core.RunMode;
 import dev.mappywall.core.WaterTransitPolicy;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -45,6 +49,7 @@ import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Pose;
@@ -112,7 +117,6 @@ public final class MovementController {
     private static final double MAX_PLAN_START_DRIFT_SQR = 2.0;
     private static final int LOOKAHEAD_VALIDATION_STEPS = 3;
     private static final int MAX_BREAK_ACTIONS_PER_TARGET = 9;
-    private static final int BOAT_COOLDOWN_TICKS = 40;
     private static final int EAT_COOLDOWN_TICKS = 20;
     private static final int ELYTRA_START_COOLDOWN_TICKS = 20;
     private static final int ELYTRA_FIREWORK_NORMAL_COOLDOWN_TICKS = 70;
@@ -154,6 +158,7 @@ public final class MovementController {
             new PathSegmentCoordinator<>();
     private final WaterTransitPolicy waterTransitPolicy = new WaterTransitPolicy();
     private final WaterRouteEvidenceAdapter waterRouteEvidenceAdapter = new WaterRouteEvidenceAdapter();
+    private final BoatAcquisitionPolicy boatAcquisitionPolicy = new BoatAcquisitionPolicy();
     private final NavigationPlanningRetryState planningRetry =
             new NavigationPlanningRetryState(PLANNING_CADENCE);
     private final ArrayDeque<MovementSample> movementSamples = new ArrayDeque<>();
@@ -163,7 +168,6 @@ public final class MovementController {
     private int horizontalCollisionTicks;
     private int consecutiveNoPathFailures;
     private int placeCooldown;
-    private int boatCooldown;
     private int eatCooldown;
     private int elytraStartCooldown;
     private int fireworkCooldown;
@@ -205,6 +209,16 @@ public final class MovementController {
     private boolean waterReplanContinuityPending;
     private WaterRouteEvidenceAdapter.Evidence currentWaterEvidence =
             WaterRouteEvidenceAdapter.Evidence.none();
+    private Set<Integer> boatPlacementBaseline = Set.of();
+    private BlockPos pendingBoatPlacementSurface;
+    private BlockPos boatSurfaceApproachTarget;
+    private BlockPos lastBoatSurfaceApproachTarget;
+    private double lastBoatSurfaceVerticalDistance = Double.MAX_VALUE;
+    private int boatSurfaceApproachCandidateId;
+    private int lastBoatSurfaceApproachCandidateId;
+    private int routeBoatApproachStallTicks;
+    private int routeBoatBackoffEntityId;
+    private int routeBoatBackoffTicks;
 
     public MovementController() {
         this(AutoNavigationConfig.aggressiveDefaults());
@@ -776,7 +790,10 @@ public final class MovementController {
                 && !blockId.equals("minecraft:pointed_dripstone");
     }
 
-    private boolean trackStep(LocalPathPlanner.PathStep step) {
+    private boolean trackStep(
+            LocalPathPlanner.PathStep step,
+            boolean suspendWaypointTimeout
+    ) {
         String signature = currentStepOrdinal + ":" + step.action() + ":" + step.pos().asLong()
                 + ":" + (step.actionBlock() == null ? "-" : step.actionBlock().asLong());
         if (!signature.equals(activeStepSignature)) {
@@ -788,14 +805,16 @@ public final class MovementController {
             actionAcknowledged = false;
             dropCommitted = false;
         }
-        activeStepTicks++;
+        if (!suspendWaypointTimeout) {
+            activeStepTicks++;
+        }
         if (step.action() == LocalPathPlanner.StepAction.BREAK && breakingBlock != null) {
             return activeStepTicks <= BREAK_TIMEOUT_TICKS;
         }
         if (step.action() == LocalPathPlanner.StepAction.PLACE && !actionAcknowledged) {
             return true;
         }
-        return activeStepTicks <= STUCK_TICKS_LIMIT * 2;
+        return suspendWaypointTimeout || activeStepTicks <= STUCK_TICKS_LIMIT * 2;
     }
 
     public List<BlockPos> pathSnapshot() {
@@ -805,7 +824,11 @@ public final class MovementController {
     }
 
     private MovementResult executeStep(Minecraft client, LocalPlayer player, LocalPathPlanner.PathStep waypoint) {
-        if (!trackStep(waypoint)) {
+        boolean continuingBoatSurfaceApproach = waypoint.action() == LocalPathPlanner.StepAction.SWIM
+                && boatSurfaceApproachTarget != null;
+        boatSurfaceApproachTarget = null;
+        boatSurfaceApproachCandidateId = 0;
+        if (!trackStep(waypoint, continuingBoatSurfaceApproach)) {
             boolean movementAction = isMovementAction(waypoint.action());
             if (movementAction) {
                 movementRecoveryFailures++;
@@ -1119,33 +1142,527 @@ public final class MovementController {
         return MovementResult.active(List.of(navigationTarget));
     }
 
+    private record RouteBoatCandidate(int entityId, BlockPos approachSurface) {}
+
+    static boolean isAcceptedBoatCorridorColumn(
+            BlockPos boatColumn,
+            List<BlockPos> acceptedSurfaces
+    ) {
+        Objects.requireNonNull(boatColumn, "boatColumn");
+        Objects.requireNonNull(acceptedSurfaces, "acceptedSurfaces");
+        return acceptedSurfaces.contains(boatColumn);
+    }
+
+    static boolean isPreferredRouteBoatCandidate(
+            boolean candidateReachable,
+            double candidateDistanceSquared,
+            boolean currentReachable,
+            double currentDistanceSquared
+    ) {
+        if (candidateReachable != currentReachable) {
+            return candidateReachable;
+        }
+        return candidateDistanceSquared < currentDistanceSquared;
+    }
+
+    static boolean isRouteBoatCandidateAvailable(
+            int candidateId,
+            int backedOffEntityId,
+            int backoffTicks
+    ) {
+        return candidateId > 0
+                && (backoffTicks <= 0 || candidateId != backedOffEntityId);
+    }
+
+    private List<BlockPos> acceptedWaterCorridorSurfaces() {
+        ArrayList<BlockPos> accepted = new ArrayList<>();
+        if (waterRunAnchor != null && waterRunAnchorSurfaceY.isPresent()) {
+            accepted.add(new BlockPos(
+                    waterRunAnchor.getX(),
+                    waterRunAnchorSurfaceY.getAsInt(),
+                    waterRunAnchor.getZ()
+            ));
+        }
+        for (WaterRouteEvidenceAdapter.ResolvedSurface surface : currentWaterEvidence.surfaces()) {
+            if (!accepted.contains(surface.waterPos())) {
+                accepted.add(surface.waterPos());
+            }
+        }
+        return List.copyOf(accepted);
+    }
+
+    private Optional<RouteBoatCandidate> findRouteAdjacentEligibleBoat(
+            Minecraft client,
+            LocalPlayer player
+    ) {
+        List<BlockPos> surfaces = acceptedWaterCorridorSurfaces();
+        if (client.level == null || surfaces.isEmpty()) {
+            return Optional.empty();
+        }
+        AABB searchBox = new AABB(surfaces.getFirst());
+        for (int index = 1; index < surfaces.size(); index++) {
+            searchBox = searchBox.minmax(new AABB(surfaces.get(index)));
+        }
+        List<AbstractBoat> candidates = client.level.getEntitiesOfClass(
+                AbstractBoat.class,
+                searchBox.inflate(1.0, 2.0, 1.0),
+                boat -> isRouteBoatCandidateAvailable(
+                                boat.getId(), routeBoatBackoffEntityId, routeBoatBackoffTicks)
+                        && acceptedApproachSurfaceForBoat(client, boat).isPresent()
+        );
+        AbstractBoat selected = null;
+        boolean selectedReachable = false;
+        double selectedDistanceSquared = Double.MAX_VALUE;
+        for (AbstractBoat candidate : candidates) {
+            double candidateDistanceSquared = candidate.distanceToSqr(player);
+            boolean candidateReachable = player.getEyePosition().distanceToSqr(candidate.position())
+                    <= BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
+                    && player.hasLineOfSight(candidate);
+            if (selected == null || isPreferredRouteBoatCandidate(
+                    candidateReachable,
+                    candidateDistanceSquared,
+                    selectedReachable,
+                    selectedDistanceSquared
+            )) {
+                selected = candidate;
+                selectedReachable = candidateReachable;
+                selectedDistanceSquared = candidateDistanceSquared;
+            }
+        }
+        if (selected == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new RouteBoatCandidate(
+                selected.getId(), acceptedApproachSurfaceForBoat(client, selected).orElseThrow()));
+    }
+
+    private Optional<BlockPos> acceptedApproachSurfaceForBoat(
+            Minecraft client,
+            int boatEntityId
+    ) {
+        if (client.level == null) {
+            return Optional.empty();
+        }
+        Entity entity = client.level.getEntity(boatEntityId);
+        return entity instanceof AbstractBoat boat
+                ? acceptedApproachSurfaceForBoat(client, boat)
+                : Optional.empty();
+    }
+
+    private Optional<BlockPos> acceptedApproachSurfaceForBoat(
+            Minecraft client,
+            AbstractBoat boat
+    ) {
+        if (!boat.isAlive()
+                || !boat.getPassengers().isEmpty()
+                || !shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)) {
+            return Optional.empty();
+        }
+        OptionalInt runSurfaceY = waterTransitPolicy.surfaceY();
+        OptionalInt boatSurfaceY = waterRouteEvidenceAdapter.resolveBoatSurfaceY(client, boat);
+        if (runSurfaceY.isEmpty()
+                || boatSurfaceY.isEmpty()
+                || runSurfaceY.getAsInt() != boatSurfaceY.getAsInt()) {
+            return Optional.empty();
+        }
+        BlockPos boatColumn = BlockPos.containing(
+                boat.getX(), runSurfaceY.getAsInt(), boat.getZ());
+        List<BlockPos> acceptedSurfaces = acceptedWaterCorridorSurfaces();
+        return isAcceptedBoatCorridorColumn(boatColumn, acceptedSurfaces)
+                ? Optional.of(boatColumn)
+                : Optional.empty();
+    }
+
+    private OptionalInt reachableBoatFromCandidate(
+            Minecraft client,
+            LocalPlayer player,
+            Optional<RouteBoatCandidate> candidate
+    ) {
+        if (client.level == null || candidate.isEmpty()) {
+            return OptionalInt.empty();
+        }
+        Entity entity = client.level.getEntity(candidate.orElseThrow().entityId());
+        if (!(entity instanceof AbstractBoat boat)
+                || !boat.isAlive()
+                || !boat.getPassengers().isEmpty()
+                || !shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)
+                || player.getEyePosition().distanceToSqr(boat.position())
+                        > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
+                || !player.hasLineOfSight(boat)) {
+            return OptionalInt.empty();
+        }
+        return OptionalInt.of(boat.getId());
+    }
+
+    private boolean interactWithBoat(Minecraft client, LocalPlayer player, int selectedBoatId) {
+        if (client.level == null || client.gameMode == null) {
+            return false;
+        }
+        Entity entity = client.level.getEntity(selectedBoatId);
+        if (!(entity instanceof AbstractBoat boat)
+                || !selectedBoatRemainsEligible(client, boat)
+                || player.getEyePosition().distanceToSqr(boat.position())
+                        > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
+                || !player.hasLineOfSight(boat)) {
+            return false;
+        }
+        InteractionResult result = client.gameMode.interact(
+                player, boat, new EntityHitResult(boat), InteractionHand.MAIN_HAND);
+        if (result.consumesAction()) {
+            player.swing(InteractionHand.MAIN_HAND);
+            return true;
+        }
+        return false;
+    }
+
+    private Optional<BlockPos> reachableBoatPlacementSurface(LocalPlayer player) {
+        Vec3 eye = player.getEyePosition();
+        return currentWaterEvidence.surfaces().stream()
+                .map(WaterRouteEvidenceAdapter.ResolvedSurface::waterPos)
+                .filter(pos -> eye.distanceToSqr(Vec3.atCenterOf(pos).add(0.0, 0.25, 0.0))
+                        <= BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS)
+                .findFirst();
+    }
+
+    private Set<Integer> captureLoadedBoatIds(Minecraft client) {
+        if (client.level == null) {
+            return Set.of();
+        }
+        HashSet<Integer> ids = new HashSet<>();
+        for (Entity entity : client.level.entitiesForRendering()) {
+            if (entity instanceof AbstractBoat boat && boat.isAlive()) {
+                ids.add(boat.getId());
+            }
+        }
+        return Set.copyOf(ids);
+    }
+
+    static boolean isNewPlacementBoat(int candidateId, Set<Integer> baseline, double distanceSquared) {
+        Objects.requireNonNull(baseline, "baseline");
+        return candidateId > 0
+                && !baseline.contains(candidateId)
+                && distanceSquared <= 9.0;
+    }
+
+    static boolean isConfirmedPlacementBoatEligible(
+            int candidateId,
+            Set<Integer> baseline,
+            double distanceSquared,
+            OptionalInt waterRunSurfaceY,
+            OptionalInt placementSurfaceY,
+            OptionalInt boatSurfaceY
+    ) {
+        return isNewPlacementBoat(candidateId, baseline, distanceSquared)
+                && isCompatibleResolvedBoatSurface(
+                        waterRunSurfaceY, placementSurfaceY, boatSurfaceY);
+    }
+
+    private OptionalInt findNewPlacementBoat(Minecraft client) {
+        if (client.level == null || pendingBoatPlacementSurface == null) {
+            return OptionalInt.empty();
+        }
+        Vec3 center = Vec3.atCenterOf(pendingBoatPlacementSurface);
+        AbstractBoat nearest = client.level.getEntitiesOfClass(
+                        AbstractBoat.class,
+                        new AABB(pendingBoatPlacementSurface).inflate(3.0),
+                        boat -> boat.isAlive()
+                                && boat.getPassengers().isEmpty()
+                                && shouldBoardBoat(
+                                        boat.getId(), dismountRecovery::suppressBoarding)
+                                && isConfirmedPlacementBoatEligible(
+                                        boat.getId(),
+                                        boatPlacementBaseline,
+                                        boat.position().distanceToSqr(center),
+                                        waterTransitPolicy.surfaceY(),
+                                        OptionalInt.of(pendingBoatPlacementSurface.getY()),
+                                        waterRouteEvidenceAdapter.resolveBoatSurfaceY(client, boat)
+                                )
+                ).stream()
+                .min((left, right) -> Double.compare(
+                        left.position().distanceToSqr(center),
+                        right.position().distanceToSqr(center)))
+                .orElse(null);
+        return nearest == null ? OptionalInt.empty() : OptionalInt.of(nearest.getId());
+    }
+
+    private boolean selectedBoatIsPresent(Minecraft client) {
+        if (client.level == null || boatAcquisitionPolicy.selectedBoatId().isEmpty()) {
+            return false;
+        }
+        int selectedBoatId = boatAcquisitionPolicy.selectedBoatId().getAsInt();
+        Entity entity = client.level.getEntity(selectedBoatId);
+        return entity instanceof AbstractBoat boat
+                && selectedBoatRemainsEligible(client, boat);
+    }
+
+    private boolean selectedBoatRemainsEligible(Minecraft client, AbstractBoat boat) {
+        if (!boat.isAlive()
+                || !boat.getPassengers().isEmpty()
+                || !shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)) {
+            return false;
+        }
+        if (pendingBoatPlacementSurface == null) {
+            return acceptedApproachSurfaceForBoat(client, boat).isPresent();
+        }
+        OptionalInt placementSurfaceY = OptionalInt.of(pendingBoatPlacementSurface.getY());
+        OptionalInt boatSurfaceY = waterRouteEvidenceAdapter.resolveBoatSurfaceY(client, boat);
+        return isConfirmedPlacementBoatEligible(
+                boat.getId(),
+                boatPlacementBaseline,
+                boat.position().distanceToSqr(Vec3.atCenterOf(pendingBoatPlacementSurface)),
+                waterTransitPolicy.surfaceY(),
+                placementSurfaceY,
+                boatSurfaceY
+        );
+    }
+
     private MovementResult swimOrBoat(Minecraft client, LocalPlayer player, LocalPathPlanner.PathStep waypoint) {
         AutomationStyle style = currentAutomationStyle();
-        if (currentWaterTravelDecision == WaterTransitPolicy.TravelDecision.CONTINUE_RIDING) {
-            if (player.getVehicle() instanceof AbstractBoat boat) {
-                return driveBoatToward(client, player, boat, waypoint, style);
+        return switch (currentWaterTravelDecision) {
+            case SWIM -> {
+                resetBoatAcquisition();
+                yield swimToward(client, player, waypoint);
             }
-            return swimToward(client, player, waypoint);
+            case ACQUIRE_BOAT -> acquireBoatOrSwim(client, player, waypoint, style);
+            case CONTINUE_RIDING -> {
+                resetBoatAcquisition();
+                AbstractBoat boat = player.getVehicle() instanceof AbstractBoat currentBoat
+                        ? currentBoat
+                        : null;
+                yield boat == null
+                        ? swimToward(client, player, waypoint)
+                        : driveBoatToward(client, player, boat, waypoint, style);
+            }
+        };
+    }
+
+    private MovementResult acquireBoatOrSwim(
+            Minecraft client,
+            LocalPlayer player,
+            LocalPathPlanner.PathStep waypoint,
+            AutomationStyle style
+    ) {
+        Optional<BlockPos> resolvedSurface = currentWaterEvidence.surfaces().stream()
+                .map(WaterRouteEvidenceAdapter.ResolvedSurface::waterPos)
+                .findFirst();
+        Optional<BlockPos> placementSurface = reachableBoatPlacementSurface(player);
+        boolean transactionAvailable = client.gameMode != null
+                && client.gui.screen() == null
+                && canSwapPlayerInventory(player);
+        boolean heldBoat = player.getMainHandItem().getItem() instanceof BoatItem;
+        boolean carriedBoat = findBoat(player) >= 0;
+        Optional<RouteBoatCandidate> routeBoat = findRouteAdjacentEligibleBoat(client, player);
+        OptionalInt nearbyBoat = transactionAvailable
+                ? reachableBoatFromCandidate(client, player, routeBoat)
+                : OptionalInt.empty();
+        Optional<BlockPos> routeBoatSurface = routeBoat.map(RouteBoatCandidate::approachSurface);
+        OptionalInt newBoat = findNewPlacementBoat(client);
+
+        BoatAcquisitionPolicy.Decision decision = boatAcquisitionPolicy.tick(
+                new BoatAcquisitionPolicy.Observation(
+                        true,
+                        transactionAvailable,
+                        player.getVehicle() instanceof AbstractBoat,
+                        heldBoat,
+                        carriedBoat,
+                        placementSurface.isPresent(),
+                        routeBoat.isPresent(),
+                        nearbyBoat,
+                        newBoat,
+                        selectedBoatIsPresent(client)
+                )
+        );
+
+        if (boatAcquisitionPolicy.phase() == BoatAcquisitionPolicy.Phase.FALLBACK) {
+            boatPlacementBaseline = Set.of();
+            pendingBoatPlacementSurface = null;
         }
-        if (currentWaterTravelDecision == WaterTransitPolicy.TravelDecision.ACQUIRE_BOAT) {
-            if (!player.isPassenger()
-                    && isSurfaceWaterRoute(client, waypoint.pos())
-                    && client.gui.screen() == null) {
-                if (tryBoardNearbyBoat(client, player, waypoint.pos(), style)) {
-                    return MovementResult.active(pathSnapshot());
-                }
-                if (boatCooldown <= 0 && tryPlaceBoat(client, player, waypoint, style)) {
-                    return MovementResult.active(pathSnapshot());
+
+        switch (decision.action()) {
+            case SELECT_CARRIED_BOAT -> {
+                int slot = findBoat(player);
+                if (slot >= 0) {
+                    selectOrMoveToHotbar(client, player, slot);
+                    boatAcquisitionPolicy.selectionRequested();
                 }
             }
+            case PLACE_HELD_BOAT -> {
+                if (placementSurface.isPresent()) {
+                    Set<Integer> baseline = captureLoadedBoatIds(client);
+                    Optional<InteractionResult> attempt = useBoatItemAtWater(
+                            client, player, placementSurface.orElseThrow(), style);
+                    if (attempt.isPresent()) {
+                        InteractionResult placementResult = attempt.orElseThrow();
+                        boolean accepted = placementResult.consumesAction();
+                        boatAcquisitionPolicy.placementResult(accepted);
+                        if (accepted) {
+                            boatPlacementBaseline = baseline;
+                            pendingBoatPlacementSurface = placementSurface.orElseThrow();
+                        } else {
+                            boatPlacementBaseline = Set.of();
+                            pendingBoatPlacementSurface = null;
+                        }
+                    }
+                }
+            }
+            case BOARD_SELECTED_BOAT -> {
+                int selectedBoatId = decision.boatEntityId().orElseThrow();
+                boolean accepted = interactWithBoat(client, player, selectedBoatId);
+                boatAcquisitionPolicy.boardingResult(selectedBoatId, accepted);
+            }
+            case NONE -> {
+            }
+        }
+
+        if (player.getVehicle() instanceof AbstractBoat boat) {
+            return driveBoatToward(client, player, boat, waypoint, style);
+        }
+        Optional<BlockPos> selectedBoatSurface = boatAcquisitionPolicy.selectedBoatId().isPresent()
+                ? acceptedApproachSurfaceForBoat(
+                        client, boatAcquisitionPolicy.selectedBoatId().getAsInt())
+                : Optional.empty();
+        Optional<BlockPos> holdSurface = pendingBoatPlacementSurface != null
+                ? Optional.of(pendingBoatPlacementSurface)
+                : selectedBoatSurface.isPresent()
+                        ? selectedBoatSurface
+                        : routeBoatSurface.isPresent() ? routeBoatSurface : resolvedSurface;
+        boolean acquisitionResourceAvailable = heldBoat
+                || carriedBoat
+                || routeBoat.isPresent()
+                || nearbyBoat.isPresent()
+                || newBoat.isPresent();
+        if (shouldHoldBoatAcquisitionSurface(
+                boatAcquisitionPolicy.phase(),
+                acquisitionResourceAvailable,
+                holdSurface.isPresent()
+        )) {
+            OptionalInt routeBoatId = routeBoat.isPresent()
+                    ? OptionalInt.of(routeBoat.orElseThrow().entityId())
+                    : OptionalInt.empty();
+            boatSurfaceApproachCandidateId = surfaceApproachCandidateId(
+                    pendingBoatPlacementSurface != null,
+                    boatAcquisitionPolicy.selectedBoatId(),
+                    selectedBoatSurface.isPresent(),
+                    routeBoatId,
+                    routeBoatSurface.isPresent()
+            );
+            return swimTowardBoatSurface(client, player, holdSurface.orElseThrow());
         }
         return swimToward(client, player, waypoint);
     }
 
-    private boolean isSurfaceWaterRoute(Minecraft client, BlockPos pos) {
-        return client.level != null
-                && client.level.getFluidState(pos).is(net.minecraft.tags.FluidTags.WATER)
-                && !client.level.getFluidState(pos.above()).is(net.minecraft.tags.FluidTags.WATER);
+    static int surfaceApproachCandidateId(
+            boolean pendingPlacement,
+            OptionalInt selectedBoatId,
+            boolean selectedSurfaceAvailable,
+            OptionalInt routeBoatId,
+            boolean routeSurfaceAvailable
+    ) {
+        Objects.requireNonNull(selectedBoatId, "selectedBoatId");
+        Objects.requireNonNull(routeBoatId, "routeBoatId");
+        if (pendingPlacement) {
+            return 0;
+        }
+        if (selectedSurfaceAvailable && selectedBoatId.isPresent()) {
+            return selectedBoatId.getAsInt();
+        }
+        if (routeSurfaceAvailable && routeBoatId.isPresent()) {
+            return routeBoatId.getAsInt();
+        }
+        return 0;
+    }
+
+    static boolean shouldHoldBoatAcquisitionSurface(
+            BoatAcquisitionPolicy.Phase phase,
+            boolean acquisitionResourceAvailable,
+            boolean resolvedSurfaceAvailable
+    ) {
+        Objects.requireNonNull(phase, "phase");
+        return resolvedSurfaceAvailable
+                && phase != BoatAcquisitionPolicy.Phase.FALLBACK
+                && (phase != BoatAcquisitionPolicy.Phase.IDLE || acquisitionResourceAvailable);
+    }
+
+    private MovementResult swimTowardBoatSurface(
+            Minecraft client,
+            LocalPlayer player,
+            BlockPos surface
+    ) {
+        boatSurfaceApproachTarget = surface.immutable();
+        return swimToward(
+                client,
+                player,
+                new LocalPathPlanner.PathStep(
+                        surface, LocalPathPlanner.StepAction.SWIM, null)
+        );
+    }
+
+    static boolean madeBoatSurfaceVerticalProgress(
+            BlockPos currentTarget,
+            BlockPos previousTarget,
+            double currentDistance,
+            double previousDistance
+    ) {
+        return currentTarget != null
+                && Objects.equals(currentTarget, previousTarget)
+                && currentDistance < previousDistance - 0.01;
+    }
+
+    static double nextBoatSurfaceBestDistance(
+            BlockPos currentTarget,
+            BlockPos previousTarget,
+            double currentDistance,
+            double previousBestDistance
+    ) {
+        return Objects.equals(currentTarget, previousTarget)
+                ? Math.min(currentDistance, previousBestDistance)
+                : currentDistance;
+    }
+
+    static boolean isStableBoatSurfaceHold(
+            BlockPos surfaceTarget,
+            int candidateId,
+            double horizontalDistance,
+            double verticalDistance
+    ) {
+        return surfaceTarget != null
+                && candidateId <= 0
+                && horizontalDistance <= SWIM_WAYPOINT_DISTANCE_BLOCKS
+                && verticalDistance <= 0.35;
+    }
+
+    static boolean shouldBackoffRouteBoat(
+            int candidateId,
+            boolean surfaceApproachActive,
+            boolean madeProgress,
+            int stalledTicks,
+            int collisionTicks
+    ) {
+        return candidateId > 0
+                && surfaceApproachActive
+                && !madeProgress
+                && (stalledTicks >= STUCK_TICKS_LIMIT
+                        || collisionTicks >= COLLISION_REPLAN_TICKS);
+    }
+
+    static int nextRouteBoatApproachStallTicks(
+            int candidateId,
+            int previousCandidateId,
+            boolean surfaceApproachActive,
+            boolean madeProgress,
+            int previousStallTicks
+    ) {
+        if (candidateId <= 0 || !surfaceApproachActive || madeProgress) {
+            return 0;
+        }
+        return candidateId == previousCandidateId ? previousStallTicks + 1 : 1;
+    }
+
+    private void startRouteBoatBackoff(int candidateId) {
+        routeBoatBackoffEntityId = candidateId;
+        routeBoatBackoffTicks = BoatAcquisitionPolicy.PLACEMENT_RETRY_BACKOFF_TICKS;
+        lastBoatSurfaceApproachCandidateId = 0;
+        routeBoatApproachStallTicks = 0;
     }
 
     private MovementResult swimToward(
@@ -1506,111 +2023,53 @@ public final class MovementController {
         return true;
     }
 
-    private boolean tryPlaceBoat(
-            Minecraft client,
-            LocalPlayer player,
-            LocalPathPlanner.PathStep waypoint,
-            AutomationStyle style
-    ) {
-        if (client.gameMode == null || client.level == null) {
-            return false;
-        }
-        BlockPos waterPos = bestBoatWaterPos(client, player, waypoint.pos());
-        if (waterPos == null) {
-            return false;
-        }
-        int slot = findBoat(player);
-        if (slot < 0) {
-            return false;
-        }
-        if (!selectOrMoveToHotbar(client, player, slot)) {
-            return true;
-        }
-
-        boolean canInteractNow = style == AutomationStyle.AGGRESSIVE;
-        if (!canInteractNow) {
-            float yawError = faceMovement(
-                    player,
-                    waterPos.getX() + 0.5 - player.getX(),
-                    waterPos.getZ() + 0.5 - player.getZ()
-            );
-            face(
-                    player,
-                    waterPos.getX() + 0.5 - player.getX(),
-                    waterPos.getY() + 0.75 - player.getEyeY(),
-                    waterPos.getZ() + 0.5 - player.getZ(),
-                    true
-            );
-            canInteractNow = yawError <= SPRINT_ALIGNMENT_DEGREES;
-        }
-        if (!canInteractNow) {
-            return true;
-        }
-        useBoatItemAtWater(client, player, waterPos, style);
-        boatCooldown = BOAT_COOLDOWN_TICKS;
-        return true;
-    }
-
-    private BlockPos bestBoatWaterPos(Minecraft client, LocalPlayer player, BlockPos waypoint) {
-        if (client.level == null) {
-            return null;
-        }
-        BlockPos playerPos = player.blockPosition();
-        BlockPos best = null;
-        double bestScore = Double.MAX_VALUE;
-        BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
-        for (int dx = -4; dx <= 4; dx++) {
-            for (int dz = -4; dz <= 4; dz++) {
-                for (int dy = -2; dy <= 1; dy++) {
-                    mutable.set(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getZ() + dz);
-                    BlockPos candidate = mutable.immutable();
-                    if (!isBoatWater(client, candidate)) {
-                        continue;
-                    }
-                    double eyeDistance = player.getEyePosition().distanceToSqr(Vec3.atCenterOf(candidate));
-                    if (eyeDistance > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS) {
-                        continue;
-                    }
-                    double waypointDistance = candidate.distSqr(waypoint);
-                    double score = waypointDistance + eyeDistance * 0.25;
-                    if (score < bestScore) {
-                        bestScore = score;
-                        best = candidate;
-                    }
-                }
-            }
-        }
-        return best;
-    }
-
-    private boolean isBoatWater(Minecraft client, BlockPos pos) {
-        return client.level != null
-                && client.level.getFluidState(pos).is(net.minecraft.tags.FluidTags.WATER)
-                && client.level.getBlockState(pos.above()).getCollisionShape(client.level, pos.above()).isEmpty();
-    }
-
-    private void useBoatItemAtWater(
+    private Optional<InteractionResult> useBoatItemAtWater(
             Minecraft client,
             LocalPlayer player,
             BlockPos waterPos,
             AutomationStyle style
     ) {
+        if (client.gameMode == null) {
+            return Optional.of(InteractionResult.FAIL);
+        }
         Vec3 hit = Vec3.atCenterOf(waterPos).add(0.0, 0.25, 0.0);
-        if (style == AutomationStyle.AGGRESSIVE) {
-            float oldYaw = player.getYRot();
-            float oldPitch = player.getXRot();
-            float[] look = lookAngles(player, hit);
+        if (style != AutomationStyle.AGGRESSIVE) {
+            float yawError = faceMovement(
+                    player, hit.x - player.getX(), hit.z - player.getZ());
+            float lookError = face(
+                    player,
+                    hit.x - player.getX(),
+                    hit.y - player.getEyeY(),
+                    hit.z - player.getZ(),
+                    true
+            );
+            if (Math.max(yawError, lookError) > SPRINT_ALIGNMENT_DEGREES) {
+                return Optional.empty();
+            }
+            InteractionResult result = client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+            if (result.consumesAction()) {
+                player.swing(InteractionHand.MAIN_HAND);
+            }
+            return Optional.of(result);
+        }
+
+        float oldYaw = player.getYRot();
+        float oldPitch = player.getXRot();
+        float[] look = lookAngles(player, hit);
+        InteractionResult result;
+        try {
             sendServerLook(player, look[0], look[1]);
             player.setYRot(look[0]);
             player.setXRot(look[1]);
-            client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
-            player.swing(InteractionHand.MAIN_HAND);
+            result = client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+            if (result.consumesAction()) {
+                player.swing(InteractionHand.MAIN_HAND);
+            }
+        } finally {
             player.setYRot(oldYaw);
             player.setXRot(oldPitch);
-            return;
         }
-        client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
-        player.swing(InteractionHand.MAIN_HAND);
+        return Optional.of(result);
     }
 
     private float[] lookAngles(LocalPlayer player, Vec3 target) {
@@ -1635,48 +2094,6 @@ public final class MovementController {
     private void sendServerLookAt(LocalPlayer player, Vec3 target) {
         float[] look = lookAngles(player, target);
         sendServerLook(player, look[0], look[1]);
-    }
-
-    private boolean tryBoardNearbyBoat(
-            Minecraft client,
-            LocalPlayer player,
-            BlockPos waterPos,
-            AutomationStyle style
-    ) {
-        if (client.level == null || client.gameMode == null) {
-            return false;
-        }
-        AABB searchBox = new AABB(waterPos).inflate(style == AutomationStyle.AGGRESSIVE ? 6.0 : 3.0);
-        List<AbstractBoat> boats = client.level.getEntitiesOfClass(
-                AbstractBoat.class,
-                searchBox,
-                boat -> boat.isAlive()
-                        && shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)
-                        && boat.getPassengers().isEmpty()
-                        && player.getEyePosition().distanceToSqr(boat.position())
-                                <= BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS
-                        && player.hasLineOfSight(boat)
-        );
-        if (boats.isEmpty()) {
-            return false;
-        }
-        AbstractBoat boat = boats.stream()
-                .min((left, right) -> Double.compare(left.distanceToSqr(player), right.distanceToSqr(player)))
-                .orElse(null);
-        if (boat == null) {
-            return false;
-        }
-        boolean canInteractNow = style == AutomationStyle.AGGRESSIVE;
-        if (!canInteractNow) {
-            float yawError = faceMovement(player, boat.getX() - player.getX(), boat.getZ() - player.getZ());
-            canInteractNow = yawError <= SPRINT_ALIGNMENT_DEGREES;
-        }
-        if (!canInteractNow) {
-            return true;
-        }
-        client.gameMode.interact(player, boat, new EntityHitResult(boat), InteractionHand.MAIN_HAND);
-        player.swing(InteractionHand.MAIN_HAND);
-        return true;
     }
 
     private float[] elytraControlLook(
@@ -2176,13 +2593,7 @@ public final class MovementController {
                 return null;
             }
             if (step.action() != LocalPathPlanner.StepAction.SWIM) {
-                waterTransitPolicy.leaveWaterRun();
-                currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
-                waterRunAnchor = null;
-                waterRunAnchorSurfaceY = OptionalInt.empty();
-                waterReplanAnchor = null;
-                waterReplanContinuityPending = false;
-                currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+                leaveWaterRun();
             } else {
                 currentWaterTravelDecision = refreshWaterEvidence(client, player);
             }
@@ -2210,13 +2621,7 @@ public final class MovementController {
                 .resolveBoatableSurface(client, step.pos())
                 .orElse(null);
         if (resolved == null) {
-            waterTransitPolicy.leaveWaterRun();
-            currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
-            waterRunAnchor = null;
-            waterRunAnchorSurfaceY = OptionalInt.empty();
-            waterReplanAnchor = null;
-            waterReplanContinuityPending = false;
-            currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+            leaveWaterRun();
             return;
         }
         BlockPos anchor = waterRunAnchor == null
@@ -2270,7 +2675,7 @@ public final class MovementController {
                             waterTransitPolicy.surfaceY(),
                             candidateSurfaceY
                     )) {
-                waterTransitPolicy.leaveWaterRun();
+                leaveWaterRun();
             }
             waterRunAnchor = candidate;
             waterRunAnchorSurfaceY = candidateSurfaceY;
@@ -2455,7 +2860,35 @@ public final class MovementController {
         double playerMoved = Math.sqrt(movedX * movedX + movedZ * movedZ);
         boolean madeProgress = distance < lastDistance - STUCK_EPSILON
                 || waypointDistance < lastWaypointDistance - STUCK_EPSILON;
-        if (madeProgress) {
+        double boatSurfaceVerticalDistance = boatSurfaceApproachTarget == null
+                ? Double.MAX_VALUE
+                : Math.abs(boatSurfaceApproachTarget.getY() + 0.5 - player.getY());
+        double boatSurfaceHorizontalDistance = boatSurfaceApproachTarget == null
+                ? Double.MAX_VALUE
+                : Math.sqrt(squaredHorizontalDistance(player, boatSurfaceApproachTarget));
+        boolean boatSurfaceProgress = madeBoatSurfaceVerticalProgress(
+                boatSurfaceApproachTarget,
+                lastBoatSurfaceApproachTarget,
+                boatSurfaceVerticalDistance,
+                lastBoatSurfaceVerticalDistance
+        );
+        boolean surfaceApproachActive = boatSurfaceApproachTarget != null;
+        boolean stableSurfaceHold = isStableBoatSurfaceHold(
+                boatSurfaceApproachTarget,
+                boatSurfaceApproachCandidateId,
+                boatSurfaceHorizontalDistance,
+                boatSurfaceVerticalDistance
+        );
+        madeProgress = madeProgress || boatSurfaceProgress;
+        double nextBoatSurfaceBestDistance = nextBoatSurfaceBestDistance(
+                boatSurfaceApproachTarget,
+                lastBoatSurfaceApproachTarget,
+                boatSurfaceVerticalDistance,
+                lastBoatSurfaceVerticalDistance
+        );
+        lastBoatSurfaceApproachTarget = boatSurfaceApproachTarget;
+        lastBoatSurfaceVerticalDistance = nextBoatSurfaceBestDistance;
+        if (madeProgress || stableSurfaceHold) {
             stuckTicks = 0;
             if (isMovementAction(waypoint.action())) {
                 movementRecoveryFailures = 0;
@@ -2472,21 +2905,52 @@ public final class MovementController {
         // resolution is successfully sliding the entity along a wall. Replan only
         // when the collision is accompanied by no useful motion; otherwise a
         // harmless brush repeatedly discards a valid detour path.
-        if (movementAction && player.horizontalCollision && playerMoved <= PLAYER_MOVE_EPSILON) {
+        if (!stableSurfaceHold
+                && movementAction
+                && player.horizontalCollision
+                && playerMoved <= PLAYER_MOVE_EPSILON) {
             horizontalCollisionTicks++;
         } else {
             horizontalCollisionTicks = 0;
         }
-        if (movementAction) {
+        if (movementAction && !surfaceApproachActive) {
             recordMovementSample(playerPos);
         } else {
             movementSamples.clear();
         }
 
+        routeBoatApproachStallTicks = nextRouteBoatApproachStallTicks(
+                boatSurfaceApproachCandidateId,
+                lastBoatSurfaceApproachCandidateId,
+                surfaceApproachActive,
+                madeProgress,
+                routeBoatApproachStallTicks
+        );
+        lastBoatSurfaceApproachCandidateId = boatSurfaceApproachCandidateId;
+
+        if (shouldBackoffRouteBoat(
+                boatSurfaceApproachCandidateId,
+                surfaceApproachActive,
+                madeProgress,
+                routeBoatApproachStallTicks,
+                horizontalCollisionTicks
+        )) {
+            startRouteBoatBackoff(boatSurfaceApproachCandidateId);
+            stuckTicks = 0;
+            horizontalCollisionTicks = 0;
+            boatSurfaceApproachTarget = null;
+            boatSurfaceApproachCandidateId = 0;
+            return;
+        }
+
         if (horizontalCollisionTicks >= COLLISION_REPLAN_TICKS
                 || stuckTicks >= STUCK_TICKS_LIMIT
-                || (movementAction && isTrappedInRecentArea(LOCAL_STALL_TICKS, LOCAL_STALL_AREA_BLOCKS))
-                || (movementAction && isTrappedInRecentArea(LOOP_STALL_TICKS, LOOP_STALL_AREA_BLOCKS))) {
+                || (!surfaceApproachActive
+                        && movementAction
+                        && isTrappedInRecentArea(LOCAL_STALL_TICKS, LOCAL_STALL_AREA_BLOCKS))
+                || (!surfaceApproachActive
+                        && movementAction
+                        && isTrappedInRecentArea(LOOP_STALL_TICKS, LOOP_STALL_AREA_BLOCKS))) {
             if (movementAction) {
                 movementRecoveryFailures++;
             }
@@ -3545,8 +4009,11 @@ public final class MovementController {
         if (placeCooldown > 0) {
             placeCooldown--;
         }
-        if (boatCooldown > 0) {
-            boatCooldown--;
+        if (routeBoatBackoffTicks > 0) {
+            routeBoatBackoffTicks--;
+            if (routeBoatBackoffTicks == 0) {
+                routeBoatBackoffEntityId = 0;
+            }
         }
         if (eatCooldown > 0) {
             eatCooldown--;
@@ -3559,6 +4026,17 @@ public final class MovementController {
         }
     }
 
+    private void leaveWaterRun() {
+        waterTransitPolicy.leaveWaterRun();
+        currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
+        waterRunAnchor = null;
+        waterRunAnchorSurfaceY = OptionalInt.empty();
+        waterReplanAnchor = null;
+        waterReplanContinuityPending = false;
+        currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+        resetBoatAcquisition();
+    }
+
     private void resetWaterTransit() {
         waterTransitPolicy.reset();
         currentWaterTravelDecision = WaterTransitPolicy.TravelDecision.SWIM;
@@ -3567,6 +4045,21 @@ public final class MovementController {
         waterReplanAnchor = null;
         waterReplanContinuityPending = false;
         currentWaterEvidence = WaterRouteEvidenceAdapter.Evidence.none();
+        resetBoatAcquisition();
+    }
+
+    private void resetBoatAcquisition() {
+        boatAcquisitionPolicy.resetForWaterRun();
+        boatPlacementBaseline = Set.of();
+        pendingBoatPlacementSurface = null;
+        boatSurfaceApproachTarget = null;
+        lastBoatSurfaceApproachTarget = null;
+        lastBoatSurfaceVerticalDistance = Double.MAX_VALUE;
+        boatSurfaceApproachCandidateId = 0;
+        lastBoatSurfaceApproachCandidateId = 0;
+        routeBoatApproachStallTicks = 0;
+        routeBoatBackoffEntityId = 0;
+        routeBoatBackoffTicks = 0;
     }
 
     private void resetProgress() {
@@ -3595,7 +4088,6 @@ public final class MovementController {
         dropCommitted = false;
         eatingSession = false;
         placeCooldown = 0;
-        boatCooldown = 0;
         eatCooldown = 0;
         elytraStartCooldown = 0;
         fireworkCooldown = 0;

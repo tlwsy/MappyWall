@@ -231,7 +231,8 @@ class MovementControllerDismountTest {
         assertTrue(source.contains("dismountRecovery.requestPosition()"));
         assertTrue(source.contains("dismountRecovery.cancel()"));
         assertTrue(source.contains("dismountRecovery.reset()"));
-        assertTrue(source.contains("shouldBoardBoat(boat.getId(), dismountRecovery::suppressBoarding)"));
+        assertTrue(compact(source).contains(
+                "shouldBoardBoat(boat.getId(),dismountRecovery::suppressBoarding)"));
 
         String arrival = methodSource(
                 source,
