@@ -24,7 +24,7 @@
 
 ## File Structure
 
-- `src/test/java/dev/mappywall/client/MinecraftCompatibilityContractTest.java`: source, default-target, and metadata regression contract for this migration.
+- `src/test/java/dev/mappywall/client/MinecraftCompatibilityContractTest.java`: real block-center behavior and processed release-metadata contract for this migration.
 - `gradle.properties`: default target, loader/toolchain values, and release version only; per-target game/API coordinates move out in Task 2.
 - `build.gradle`: dependency target map, target validation, status output, and remapped-JAR verification.
 - `src/main/resources/fabric.mod.json`: exact three-release Minecraft dependency range.
@@ -53,94 +53,59 @@
 - Consumes: the current 26.2 implementation at design base `ab86153` and the historical 26.1.2 renderer at commit `f4267fd`.
 - Produces: a default Minecraft 26.1 build, metadata range `>=26.1 <=26.1.2`, version `0.1.33+mc26.1-26.1.2`, and `MovementController.blockCenter(BlockPos): Vec3`.
 
-- [ ] **Step 1: Add the failing compatibility contract**
+- [ ] **Step 1: Add the failing behavior and processed-metadata contract**
 
-Create `MinecraftCompatibilityContractTest.java` with these assertions. They inspect real repository inputs and fail against the current 26.2 branch without mocking Minecraft behavior.
+Create `MinecraftCompatibilityContractTest.java`. The geometry test exercises
+the wished-for production helper directly. The metadata test reads the
+processed classpath resource produced by Gradle, not the source file.
 
 ```java
 package dev.mappywall.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
-import java.io.Reader;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Properties;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 
 final class MinecraftCompatibilityContractTest {
     @Test
-    void sharedReleaseBuildsAgainstOldestSupportedVersion() throws IOException {
-        Properties properties = gradleProperties();
+    void blockCenterPreservesHalfBlockOffsetsForNegativeCoordinates() {
+        Vec3 center = MovementController.blockCenter(new BlockPos(-2, 63, 4));
 
-        assertEquals("26.1", properties.getProperty("minecraft_version"));
-        assertEquals("0.145.1+26.1", properties.getProperty("fabric_version"));
-        assertEquals("0.19.3", properties.getProperty("loader_version"));
-        assertEquals("25", properties.getProperty("java_version"));
-        assertEquals("0.1.33+mc26.1-26.1.2", properties.getProperty("mod_version"));
+        assertEquals(-1.5, center.x);
+        assertEquals(63.5, center.y);
+        assertEquals(4.5, center.z);
     }
 
     @Test
-    void metadataSupportsExactlyTheRequestedMinecraftRange() throws IOException {
-        JsonObject metadata = JsonParser.parseString(Files.readString(Path.of(
-                "src", "main", "resources", "fabric.mod.json"))).getAsJsonObject();
-        JsonObject depends = metadata.getAsJsonObject("depends");
+    void processedMetadataBoundsTheSharedClientRelease() throws IOException {
+        try (InputStream input = MinecraftCompatibilityContractTest.class
+                .getClassLoader()
+                .getResourceAsStream("fabric.mod.json")) {
+            assertNotNull(input);
+            JsonObject metadata = JsonParser.parseReader(new InputStreamReader(
+                    input, StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject depends = metadata.getAsJsonObject("depends");
 
-        assertEquals(">=26.1 <=26.1.2", depends.get("minecraft").getAsString());
-        assertEquals(">=0.19.3", depends.get("fabricloader").getAsString());
-        assertEquals(">=25", depends.get("java").getAsString());
-        assertEquals("client", metadata.get("environment").getAsString());
-        assertTrue(metadata.getAsJsonObject("entrypoints").has("client"));
-        assertFalse(metadata.getAsJsonObject("entrypoints").has("main"));
-        assertFalse(metadata.getAsJsonObject("entrypoints").has("server"));
-    }
-
-    @Test
-    void clientAvoidsKnown26_2OnlyApis() throws IOException {
-        String runtime = clientSource("MappyWallRuntime.java");
-        String settings = clientSource("NavigationSettingsScreen.java");
-        String movement = clientSource("MovementController.java");
-        String renderer = clientSource("WorldTargetRenderer.java");
-        String compactMovement = movement.replaceAll("\\s+", "");
-
-        assertFalse(runtime.contains("setScreenAndShow("));
-        assertTrue(runtime.contains("client.setScreen(new MapWallTasksScreen(this));"));
-        assertTrue(runtime.contains("client.setScreen(new MapWallConfigScreen(this));"));
-        assertTrue(runtime.contains(
-                "client.setScreen(new NavigationSettingsScreen(this, parent));"));
-        assertFalse(settings.contains("setScreenAndShow("));
-        assertTrue(settings.contains("Minecraft.getInstance().setScreen(parent);"));
-
-        assertFalse(movement.contains("Vec3.atCenterOf("));
-        assertTrue(movement.contains("static Vec3 blockCenter(BlockPos pos)"));
-        assertTrue(compactMovement.contains(
-                "staticVec3blockCenter(BlockPospos){"
-                        + "returnnewVec3(pos.getX()+0.5,pos.getY()+0.5,pos.getZ()+0.5);}"));
-
-        assertFalse(renderer.contains("submitNodeCollector()"));
-        assertFalse(renderer.contains("levelState()"));
-        assertTrue(renderer.contains(
-                "context.bufferSource().getBuffer(RenderTypes.linesTranslucent())"));
-        assertTrue(renderer.contains(
-                "context.gameRenderer().getMainCamera().position()"));
-    }
-
-    private static Properties gradleProperties() throws IOException {
-        Properties properties = new Properties();
-        try (Reader reader = Files.newBufferedReader(Path.of("gradle.properties"))) {
-            properties.load(reader);
+            assertEquals("0.1.33+mc26.1-26.1.2", metadata.get("version").getAsString());
+            assertEquals(">=26.1 <=26.1.2", depends.get("minecraft").getAsString());
+            assertEquals(">=0.19.3", depends.get("fabricloader").getAsString());
+            assertEquals(">=25", depends.get("java").getAsString());
+            assertEquals("client", metadata.get("environment").getAsString());
+            assertTrue(metadata.getAsJsonObject("entrypoints").has("client"));
+            assertFalse(metadata.getAsJsonObject("entrypoints").has("main"));
+            assertFalse(metadata.getAsJsonObject("entrypoints").has("server"));
         }
-        return properties;
-    }
-
-    private static String clientSource(String fileName) throws IOException {
-        return Files.readString(Path.of(
-                "src", "client", "java", "dev", "mappywall", "client", fileName));
     }
 }
 ```
@@ -155,7 +120,21 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew test \
   --no-daemon --rerun-tasks
 ```
 
-Expected: FAIL because the current properties and metadata still say `26.2`, the mod version is `0.1.32`, and the client sources contain the three known 26.2-only seams.
+Expected: FAIL at test compilation because the wished-for
+`MovementController.blockCenter(BlockPos)` behavior does not exist yet. This
+is the missing production API under test, not a spelling or fixture error.
+
+Also run the real 26.1 client compilation before changing production code:
+
+```bash
+GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew compileClientJava \
+  -Pminecraft_version=26.1 -Pfabric_version=0.145.1+26.1 \
+  --no-daemon --rerun-tasks
+```
+
+Expected RED evidence: compilation fails on the known 26.2-only screen,
+block-center, or level-render APIs. Preserve the exact compiler diagnostics in
+the Task 1 report.
 
 - [ ] **Step 3: Move the default dependency and release metadata to 26.1**
 
@@ -411,56 +390,14 @@ Give a fresh reviewer `git diff HEAD^..HEAD`, the Task 1 brief, the RED/GREEN ou
 **Files:**
 - Modify: `build.gradle:1-92`
 - Modify: `gradle.properties:4-11`
-- Modify: `src/test/java/dev/mappywall/client/MinecraftCompatibilityContractTest.java`
 
 **Interfaces:**
 - Consumes: Task 1's green default Minecraft 26.1 build and exact dependency coordinates from the approved design.
 - Produces: Gradle property `minecraft_target`, immutable map `supportedMinecraftTargets`, resolved maps with keys `minecraftVersion` and `fabricApiVersion`, and fail-fast validation for unsupported targets.
 
-- [ ] **Step 1: Change the contract to require the matrix-owned default**
+- [ ] **Step 1: Verify target selection and rejection are missing (RED)**
 
-Replace the first test in `MinecraftCompatibilityContractTest` with:
-
-```java
-@Test
-void sharedReleaseDefaultsToOldestMatrixTarget() throws IOException {
-    Properties properties = gradleProperties();
-    String build = Files.readString(Path.of("build.gradle"));
-    String compactBuild = build.replaceAll("\\s+", "");
-
-    assertEquals("26.1", properties.getProperty("minecraft_target"));
-    assertFalse(properties.containsKey("minecraft_version"));
-    assertFalse(properties.containsKey("fabric_version"));
-    assertEquals("0.19.3", properties.getProperty("loader_version"));
-    assertEquals("25", properties.getProperty("java_version"));
-    assertEquals("0.1.33+mc26.1-26.1.2", properties.getProperty("mod_version"));
-
-    assertTrue(build.contains("def supportedMinecraftTargets"));
-    assertTrue(compactBuild.contains(
-            "\"26.1\":[minecraftVersion:\"26.1\","
-                    + "fabricApiVersion:\"0.145.1+26.1\"]"));
-    assertTrue(compactBuild.contains(
-            "\"26.1.1\":[minecraftVersion:\"26.1.1\","
-                    + "fabricApiVersion:\"0.145.4+26.1.1\"]"));
-    assertTrue(compactBuild.contains(
-            "\"26.1.2\":[minecraftVersion:\"26.1.2\","
-                    + "fabricApiVersion:\"0.155.2+26.1.2\"]"));
-}
-```
-
-- [ ] **Step 2: Run the changed contract and verify RED**
-
-Run:
-
-```bash
-GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew test \
-  --tests dev.mappywall.client.MinecraftCompatibilityContractTest \
-  --no-daemon --rerun-tasks
-```
-
-Expected: FAIL because `gradle.properties` still owns `minecraft_version` and `fabric_version`, has no `minecraft_target`, and `build.gradle` has no target map.
-
-Also run these pre-implementation behavior checks:
+Run these real Gradle behavior checks before changing `build.gradle`:
 
 ```bash
 GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew printFabricStatus \
@@ -472,7 +409,7 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew help \
 Expected RED evidence: the first command incorrectly reports the fixed 26.1
 properties, and the second incorrectly succeeds instead of rejecting 26.2.
 
-- [ ] **Step 3: Implement the immutable target map and validation**
+- [ ] **Step 2: Implement the immutable target map and validation**
 
 Insert this after the plugin block and before assigning `version`:
 
@@ -528,7 +465,7 @@ minecraft_target=26.1
 loader_version=0.19.3
 ```
 
-- [ ] **Step 4: Verify target selection and rejection without downloading game artifacts**
+- [ ] **Step 3: Verify target selection and rejection without downloading game artifacts**
 
 Run:
 
@@ -552,7 +489,7 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew help \
 
 Expected: FAIL during configuration with `Unsupported minecraft_target '26.2'. Supported targets: 26.1, 26.1.1, 26.1.2.`
 
-- [ ] **Step 5: Verify the JUnit contract and default target build remain green**
+- [ ] **Step 4: Verify the behavior contract and default target build remain green**
 
 Run:
 
@@ -566,17 +503,16 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew test \
 
 Expected: both commands PASS against the default `minecraft_target=26.1`.
 
-- [ ] **Step 6: Inspect and commit Task 2**
+- [ ] **Step 5: Inspect and commit Task 2**
 
 Run `git diff --check`, inspect `git diff`, then commit:
 
 ```bash
-git add -- build.gradle gradle.properties \
-  src/test/java/dev/mappywall/client/MinecraftCompatibilityContractTest.java
+git add -- build.gradle gradle.properties
 git commit -m "Add Minecraft 26.1.x build matrix"
 ```
 
-- [ ] **Step 7: Independently review Task 2**
+- [ ] **Step 6: Independently review Task 2**
 
 Give a fresh reviewer `git diff HEAD^..HEAD`, Task 2, all four selector command outputs, focused/full test output, and the global constraints. Require confirmation that each target pins the correct API, the default remains 26.1, invalid targets fail before dependency resolution, and there is no free-form `minecraft_version`/`fabric_version` override that can create mismatched coordinates.
 
