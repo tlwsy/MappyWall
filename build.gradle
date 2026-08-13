@@ -166,11 +166,32 @@ if (fabricEnabled) {
                                     + "${metadata.entrypoints.keySet()}."
                     )
                 }
+                def clientEntrypoints = metadata.entrypoints.client
+                if (!(clientEntrypoints instanceof Collection)
+                        || clientEntrypoints.size() != 1
+                        || clientEntrypoints[0] != "dev.mappywall.client.MappyWallClient") {
+                    throw new GradleException(
+                            "Unexpected client entrypoints ${clientEntrypoints}."
+                    )
+                }
                 if (metadata.mixins.size() != 1
                         || metadata.mixins[0].config != "mappywall.client.mixins.json"
                         || metadata.mixins[0].environment != "client") {
                     throw new GradleException(
                             "Unexpected client Mixin metadata ${metadata.mixins}."
+                    )
+                }
+                def mixinConfigEntry = archive.getEntry("mappywall.client.mixins.json")
+                def mixinConfig = new groovy.json.JsonSlurper().parse(
+                        archive.getInputStream(mixinConfigEntry)
+                )
+                def clientMixins = mixinConfig.client
+                if (mixinConfig["package"] != "dev.mappywall.client.mixin"
+                        || !(clientMixins instanceof Collection)
+                        || clientMixins.size() != 1
+                        || clientMixins[0] != "MultiPlayerGameModeMixin") {
+                    throw new GradleException(
+                            "Unexpected client Mixin config ${mixinConfig}."
                     )
                 }
                 if (metadata.depends.minecraft != ">=26.1 <=26.1.2") {
