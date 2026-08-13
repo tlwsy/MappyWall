@@ -4,6 +4,32 @@ plugins {
     id "net.fabricmc.fabric-loom" version "1.17.13" apply false
 }
 
+def supportedMinecraftTargets = [
+        "26.1"  : [
+                minecraftVersion: "26.1",
+                fabricApiVersion: "0.145.1+26.1"
+        ].asImmutable(),
+        "26.1.1": [
+                minecraftVersion: "26.1.1",
+                fabricApiVersion: "0.145.4+26.1.1"
+        ].asImmutable(),
+        "26.1.2": [
+                minecraftVersion: "26.1.2",
+                fabricApiVersion: "0.155.2+26.1.2"
+        ].asImmutable()
+].asImmutable()
+
+def minecraftTarget = providers.gradleProperty("minecraft_target")
+        .orElse("26.1")
+        .get()
+def minecraftCoordinates = supportedMinecraftTargets[minecraftTarget]
+if (minecraftCoordinates == null) {
+    throw new GradleException(
+            "Unsupported minecraft_target '${minecraftTarget}'. "
+                    + "Supported targets: 26.1, 26.1.1, 26.1.2."
+    )
+}
+
 version = project.mod_version
 group = project.maven_group
 
@@ -46,9 +72,9 @@ dependencies {
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 
     if (fabricEnabled) {
-        minecraft "com.mojang:minecraft:${project.minecraft_version}"
+        minecraft "com.mojang:minecraft:${minecraftCoordinates.minecraftVersion}"
         implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-        implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+        implementation "net.fabricmc.fabric-api:fabric-api:${minecraftCoordinates.fabricApiVersion}"
     }
 }
 
@@ -69,7 +95,10 @@ tasks.register("printFabricStatus") {
     group = "help"
     description = "Prints the current Fabric/Loom compilation target."
     doLast {
-        println("Fabric build target: Minecraft ${project.minecraft_version}, official mappings, Loader ${project.loader_version}, Fabric API ${project.fabric_version}.")
+        println("Fabric build target: ${minecraftTarget}; Minecraft "
+                + "${minecraftCoordinates.minecraftVersion}, official mappings, Loader "
+                + "${project.loader_version}, Fabric API "
+                + "${minecraftCoordinates.fabricApiVersion}.")
         println("Use -PenableFabric=false for core-only unit tests if client mappings or dependencies are temporarily unavailable.")
     }
 }
