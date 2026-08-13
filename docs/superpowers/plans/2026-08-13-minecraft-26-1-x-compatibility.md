@@ -4,7 +4,7 @@
 
 **Goal:** Build one MappyWall `0.1.33+mc26.1-26.1.2` release candidate JAR against Minecraft 26.1 while proving the same source builds against 26.1, 26.1.1, and 26.1.2.
 
-**Architecture:** Keep one production source tree and replace the three known 26.2-only client seams with direct 26.1.x APIs or version-neutral coordinate math. Gradle owns an immutable target-to-dependency map selected by `minecraft_target`; the default and release artifact use the oldest target, while later targets are diagnostics. A Gradle verification task inspects the remapped JAR, and the user's real-client smoke tests make the final single-JAR decision.
+**Architecture:** Keep one production source tree and replace the known 26.2-only client seams with direct 26.1.x APIs or version-neutral coordinate math. Gradle owns an immutable target-to-dependency map selected by `minecraft_target`; the default and release artifact use the oldest target, while later targets are diagnostics. A Gradle verification task inspects the remapped JAR, and the user's real-client smoke tests make the final single-JAR decision.
 
 **Tech Stack:** Java 25, Gradle 9.6.0 wrapper, Fabric Loom 1.17.13, Fabric Loader 0.19.3, Fabric API, official unobfuscated Minecraft 26.1.x names, JUnit 5.14, Gson 2.13.2.
 
@@ -29,9 +29,11 @@
 - `build.gradle`: dependency target map, target validation, status output, and remapped-JAR verification.
 - `src/main/resources/fabric.mod.json`: exact three-release Minecraft dependency range.
 - `src/client/java/dev/mappywall/client/MappyWallRuntime.java`: 26.1.x screen transition calls.
+- `src/client/java/dev/mappywall/client/MapOpenController.java`: 26.1.x current-screen state access.
 - `src/client/java/dev/mappywall/client/NavigationSettingsScreen.java`: 26.1.x return-to-parent screen call.
 - `src/client/java/dev/mappywall/client/MovementController.java`: version-neutral block-center calculation used by movement and interaction code.
 - `src/client/java/dev/mappywall/client/WorldTargetRenderer.java`: Fabric 26.1.x level-render context path.
+- `src/test/java/dev/mappywall/client/MovementControllerWaterTransitTest.java`: preserves the existing boat GUI-deferral source contract using the 26.1.x current-screen expression.
 - `AGENTS.md`: authoritative repository target and matrix commands.
 - `docs/build-notes.md`: developer build target table, matrix commands, and single-JAR/manual-test boundary.
 - `docs/design.md`: current supported versions and renderer API statement.
@@ -186,6 +188,13 @@ public void onClose() {
     Minecraft.getInstance().setScreen(parent);
 }
 ```
+
+Real 26.1 compilation additionally reports that `Gui.screen()` does not exist.
+For the existing GUI-open guards in `MappyWallRuntime`, `MapOpenController`,
+and `MovementController`, use the 26.1.x `Minecraft.screen` field while
+preserving every null comparison and surrounding condition exactly. Update the
+existing boat GUI-deferral source contract to assert the equivalent
+`client.screen != null` expression.
 
 - [ ] **Step 5: Replace block-center helpers with version-neutral math**
 
@@ -352,7 +361,12 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew test \
   --no-daemon --rerun-tasks
 ```
 
-Expected: PASS and the client source compiles against Minecraft 26.1. If compilation exposes an additional missing 26.1 API, stop this task, invoke `superpowers:systematic-debugging`, record the exact compiler symbol, and amend this plan before changing another production seam.
+Expected: PASS and the client source compiles against Minecraft 26.1. The
+observed additional compiler diagnostic was 14 missing `Gui.screen()` symbols;
+Step 4 records the verified `Minecraft.screen` replacement. If compilation
+exposes another missing 26.1 API, stop this task, invoke
+`superpowers:systematic-debugging`, record the exact compiler symbol, and amend
+this plan before changing another production seam.
 
 - [ ] **Step 8: Run the complete 26.1 regression suite**
 
@@ -363,7 +377,10 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew test \
   --no-daemon --rerun-tasks
 ```
 
-Expected: PASS with all existing navigation, persistence, client-policy, and integration-contract tests unchanged apart from the new compatibility contract.
+Expected: PASS with all existing navigation, persistence, client-policy, and
+integration-contract behavior unchanged apart from the new compatibility
+contract and the existing source contract's equivalent 26.1.x screen
+expression.
 
 - [ ] **Step 9: Inspect and commit Task 1**
 
@@ -371,10 +388,12 @@ Run `git diff --check`, inspect `git diff`, then commit only the files listed by
 
 ```bash
 git add -- gradle.properties src/main/resources/fabric.mod.json \
+  src/client/java/dev/mappywall/client/MapOpenController.java \
   src/client/java/dev/mappywall/client/MappyWallRuntime.java \
   src/client/java/dev/mappywall/client/NavigationSettingsScreen.java \
   src/client/java/dev/mappywall/client/MovementController.java \
   src/client/java/dev/mappywall/client/WorldTargetRenderer.java \
+  src/test/java/dev/mappywall/client/MovementControllerWaterTransitTest.java \
   src/test/java/dev/mappywall/client/MinecraftCompatibilityContractTest.java
 git commit -m "Target Minecraft 26.1 compatibility"
 ```
