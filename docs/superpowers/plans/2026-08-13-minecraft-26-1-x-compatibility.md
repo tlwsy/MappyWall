@@ -4,7 +4,7 @@
 
 **Goal:** Build one MappyWall `0.1.33+mc26.1-26.1.2` release candidate JAR against Minecraft 26.1 while proving the same source builds against 26.1, 26.1.1, and 26.1.2.
 
-**Architecture:** Keep one production source tree and replace the known 26.2-only client seams with direct 26.1.x APIs or version-neutral coordinate math. Gradle owns an immutable target-to-dependency map selected by `minecraft_target`; the default and release artifact use the oldest target, while later targets are diagnostics. A Gradle verification task inspects the remapped JAR, and the user's real-client smoke tests make the final single-JAR decision.
+**Architecture:** Keep one production source tree and replace the known 26.2-only client seams with direct 26.1.x APIs or version-neutral coordinate math. Gradle owns an immutable target-to-dependency map selected by `minecraft_target`; the default and release artifact use the oldest target, while later targets are diagnostics. A Gradle verification task inspects the distributable JAR, and the user's real-client smoke tests make the final single-JAR decision.
 
 **Tech Stack:** Java 25, Gradle 9.6.0 wrapper, Fabric Loom 1.17.13, Fabric Loader 0.19.3, Fabric API, official unobfuscated Minecraft 26.1.x names, JUnit 5.14, Gson 2.13.2.
 
@@ -26,7 +26,7 @@
 
 - `src/test/java/dev/mappywall/client/MinecraftCompatibilityContractTest.java`: real block-center behavior and processed release-metadata contract for this migration.
 - `gradle.properties`: default target, loader/toolchain values, and release version only; per-target game/API coordinates move out in Task 2.
-- `build.gradle`: dependency target map, target validation, status output, and remapped-JAR verification.
+- `build.gradle`: dependency target map, target validation, status output, and distributable-JAR verification.
 - `src/main/resources/fabric.mod.json`: exact three-release Minecraft dependency range.
 - `src/client/java/dev/mappywall/client/MappyWallRuntime.java`: 26.1.x screen transition calls.
 - `src/client/java/dev/mappywall/client/MapOpenController.java`: 26.1.x current-screen state access.
@@ -537,14 +537,14 @@ Give a fresh reviewer `git diff HEAD^..HEAD`, Task 2, all four selector command 
 
 ---
 
-### Task 3: Verify the shared remapped JAR as a release artifact
+### Task 3: Verify the shared distributable JAR as a release artifact
 
 **Files:**
 - Modify: `build.gradle`
 
 **Interfaces:**
-- Consumes: Task 2's `minecraftTarget`, `minecraftCoordinates`, Fabric-enabled Loom `remapJar` task, and exact shared filename.
-- Produces: Gradle verification task `verifyReleaseJar`, which inspects the remapped JAR selected by `tasks.named("remapJar")`.
+- Consumes: Task 2's `minecraftTarget`, `minecraftCoordinates`, the `jar` task, and exact shared filename. Minecraft 26 uses the official names at runtime, so Loom 1.17.13 sets `dontRemapOutputs` and does not register `remapJar`; a fresh `clean jar` is the distributable artifact path for this project.
+- Produces: Gradle verification task `verifyReleaseJar`, which inspects the distributable JAR selected by `tasks.named("jar")`.
 
 - [ ] **Step 1: Verify the release-check task is absent**
 
@@ -559,17 +559,17 @@ Expected: FAIL with `Task 'verifyReleaseJar' not found in root project 'mappywal
 
 - [ ] **Step 2: Add the artifact verification task**
 
-Append this Fabric-only task after `printFabricStatus`. It verifies the actual remapped archive rather than the source resource:
+Append this Fabric-only task after `printFabricStatus`. It verifies the actual distributable archive rather than the source resource:
 
 ```groovy
 if (fabricEnabled) {
     tasks.register("verifyReleaseJar") {
         group = "verification"
         description = "Verifies the shared Minecraft 26.1.x release JAR."
-        dependsOn tasks.named("remapJar")
+        dependsOn tasks.named("jar")
 
         doLast {
-            File jarFile = tasks.named("remapJar").get().archiveFile.get().asFile
+            File jarFile = tasks.named("jar").get().archiveFile.get().asFile
             String expectedName = "mappywall-0.1.33+mc26.1-26.1.2.jar"
             if (jarFile.name != expectedName) {
                 throw new GradleException(
@@ -696,7 +696,7 @@ git commit -m "Verify shared compatibility artifact"
 
 - [ ] **Step 7: Independently review Task 3**
 
-Give a fresh reviewer `git diff HEAD^..HEAD`, Task 3, the expected diagnostic-target rejection, the successful 26.1 verification output, and the global constraints. Require confirmation that the task reads the remapped JAR, checks the exact filename/version/range/client entrypoint, detects bundled Fabric API classes, and cannot bless a JAR compiled against 26.1.1 or 26.1.2.
+Give a fresh reviewer `git diff HEAD^..HEAD`, Task 3, the expected diagnostic-target rejection, the successful 26.1 verification output, and the global constraints. Require confirmation that the task reads the distributable `jar` output, checks the exact filename/version/range/client entrypoint, detects bundled Fabric API classes, and cannot bless a JAR compiled against 26.1.1 or 26.1.2.
 
 ---
 
