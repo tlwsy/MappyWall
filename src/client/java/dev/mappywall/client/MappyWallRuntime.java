@@ -106,15 +106,15 @@ public final class MappyWallRuntime {
         if (hasUsableWorld(client)) {
             auditCrossProjectMapIds(client, true);
         }
-        client.setScreen(new MapWallTasksScreen(this));
+        client.setScreenAndShow(new MapWallTasksScreen(this));
     }
 
     public void openNewProjectScreen(Minecraft client) {
-        client.setScreen(new MapWallConfigScreen(this));
+        client.setScreenAndShow(new MapWallConfigScreen(this));
     }
 
     public void openNavigationSettingsScreen(Minecraft client, Screen parent) {
-        client.setScreen(new NavigationSettingsScreen(this, parent));
+        client.setScreenAndShow(new NavigationSettingsScreen(this, parent));
     }
 
     AutoNavigationConfig aggressiveNavigationConfig() {

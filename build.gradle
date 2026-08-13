@@ -99,7 +99,8 @@ tasks.register("printFabricStatus") {
                 + "${minecraftCoordinates.minecraftVersion}, official mappings, Loader "
                 + "${project.loader_version}, Fabric API "
                 + "${minecraftCoordinates.fabricApiVersion}.")
-        println("Use -PenableFabric=false for core-only unit tests if client mappings or dependencies are temporarily unavailable.")
+        println("Use -PenableFabric=false compileJava only as a limited pure-source "
+                + "diagnostic; test is not supported without Fabric/client mappings.")
     }
 }
 
@@ -107,16 +108,20 @@ if (fabricEnabled) {
     tasks.register("verifyReleaseJar") {
         group = "verification"
         description = "Verifies the shared Minecraft 26.1.x release JAR."
-        dependsOn tasks.named("jar")
+        if (minecraftTarget == "26.1") {
+            dependsOn tasks.named("jar")
+        }
 
-        doLast {
+        doFirst {
             if (minecraftTarget != "26.1") {
                 throw new GradleException(
                         "The shared release JAR must be built with minecraft_target=26.1, "
                                 + "not ${minecraftTarget}."
                 )
             }
+        }
 
+        doLast {
             File jarFile = tasks.named("jar").get().archiveFile.get().asFile
             String expectedName = "mappywall-0.1.33+mc26.1-26.1.2.jar"
             if (jarFile.name != expectedName) {

@@ -149,7 +149,7 @@ final class NavigationSettingsScreen extends Screen {
 
     @Override
     public void onClose() {
-        Minecraft.getInstance().setScreen(parent);
+        Minecraft.getInstance().setScreenAndShow(parent);
     }
 
     private void load(AutoNavigationConfig config) {
