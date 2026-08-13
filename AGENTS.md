@@ -2,9 +2,11 @@
 
 ## Current Project and Layout
 
-MappyWall is an implemented Fabric client mod targeting Minecraft `26.2`. The
-project uses Java `25`, Fabric Loader `0.19.3`, Fabric API `0.152.2+26.2`, and
-Fabric Loom `1.17.13` with the official Minecraft names.
+MappyWall is an implemented Fabric client mod supporting Minecraft `26.1`,
+`26.1.1`, and `26.1.2` from one shared 26.1-compiled release candidate. The
+project uses Java `25`, Fabric Loader `0.19.3`, Fabric Loom `1.17.13`, and the
+official unobfuscated Minecraft names. Each `minecraft_target` selects its
+matching Fabric API from the guarded map in `build.gradle`.
 
 - `src/main/java/dev/mappywall/core/`: pure planning, map-grid, persistence,
   and policy logic that must remain testable without launching Minecraft.
@@ -36,6 +38,15 @@ through Bash unless its executable bit is deliberately committed:
 bash ./gradlew test --no-daemon
 bash ./gradlew build --no-daemon
 bash ./gradlew runClient
+```
+
+The default target is `26.1`. Compatibility diagnostics select the other
+supported releases without overriding Minecraft and Fabric API independently:
+
+```bash
+bash ./gradlew test --no-daemon -Pminecraft_target=26.1
+bash ./gradlew test --no-daemon -Pminecraft_target=26.1.1
+bash ./gradlew test --no-daemon -Pminecraft_target=26.1.2
 ```
 
 On Windows, use the equivalent `gradlew.bat` commands. There is currently no

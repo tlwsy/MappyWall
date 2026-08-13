@@ -2,7 +2,10 @@
 
 MappyWall is a client-only Fabric mod for planning and opening map walls on vanilla-compatible servers.
 
-Current implementation targets Minecraft `26.2` with its official unobfuscated names and Java 25.
+Current implementation supports Minecraft `26.1`, `26.1.1`, and `26.1.2`
+from one shared candidate compiled against 26.1 with official unobfuscated
+names and Java 25. Final single-JAR acceptance remains conditional on the
+user's real-client smoke tests in all three versions.
 
 ## Current boundaries
 
@@ -62,7 +65,7 @@ Inventory operations are conservative and re-check client state before continuin
 - Changing to the next map region advances the target generation and immediately invalidates active, pending, buffered, capture, and search state. Reset or clear therefore removes both executable steps and their derived display preview, while a late completion from the stale generation is rejected and cannot repopulate either state; no old walking, jumping, breaking, or placement waypoint may run for the new target.
 - Input, sprint/sneak, boat paddle, and aggressive server-look state are reset on pause, emergency stop, project/world changes, vehicle changes, and other terminal transitions.
 - This navigation work does not change sprint, swimming, boat, Elytra, block-placement, block-breaking, or packet/movement speed constants.
-- Target and path markers use Minecraft 26.2's level render-state API and render after translucent world features.
+- Target and path markers use the Minecraft 26.1.x level-render context and render after translucent world features.
 
 ## Map opening, zooming, and fill verification
 
