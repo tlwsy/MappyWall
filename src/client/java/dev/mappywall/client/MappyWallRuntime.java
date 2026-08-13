@@ -106,15 +106,15 @@ public final class MappyWallRuntime {
         if (hasUsableWorld(client)) {
             auditCrossProjectMapIds(client, true);
         }
-        client.setScreenAndShow(new MapWallTasksScreen(this));
+        client.setScreen(new MapWallTasksScreen(this));
     }
 
     public void openNewProjectScreen(Minecraft client) {
-        client.setScreenAndShow(new MapWallConfigScreen(this));
+        client.setScreen(new MapWallConfigScreen(this));
     }
 
     public void openNavigationSettingsScreen(Minecraft client, Screen parent) {
-        client.setScreenAndShow(new NavigationSettingsScreen(this, parent));
+        client.setScreen(new NavigationSettingsScreen(this, parent));
     }
 
     AutoNavigationConfig aggressiveNavigationConfig() {
@@ -758,7 +758,7 @@ public final class MappyWallRuntime {
         boolean autoWalk = activeSave.project().mode() == RunMode.AUTO_WALK;
         boolean aggressive = automatic
                 && activeSave.project().automationStyle() == AutomationStyle.AGGRESSIVE;
-        if (automatic && !aggressive && client.gui.screen() != null) {
+        if (automatic && !aggressive && client.screen != null) {
             releaseMovementIfAutomatic(client);
             movementPath = List.of();
             periodicSave(client);
@@ -1632,7 +1632,7 @@ public final class MappyWallRuntime {
         }
         boolean targetScaleReached = currentMap.get().scale() >= fillStep.region().scale();
         if (!(client.player.containerMenu instanceof CartographyTableMenu handler)
-                || client.gui.screen() == null) {
+                || client.screen == null) {
             return targetScaleReached
                     ? Component.translatable("message.mappywall.auto_zoom_return_map")
                     : Component.translatable("message.mappywall.auto_zoom_open_cartography", fillStep.region().scale());
@@ -1766,7 +1766,7 @@ public final class MappyWallRuntime {
     private boolean swapOffhandIntoSlot(Minecraft client, CartographyTableMenu handler, int slotId) {
         if (client.player == null
                 || client.gameMode == null
-                || client.gui.screen() == null
+                || client.screen == null
                 || client.player.containerMenu != handler
                 || inventoryInteractionCooldown > 0) {
             return false;
@@ -1791,7 +1791,7 @@ public final class MappyWallRuntime {
     private boolean pickupCarriedIntoSlot(Minecraft client, CartographyTableMenu handler, int slotId) {
         if (client.player == null
                 || client.gameMode == null
-                || client.gui.screen() == null
+                || client.screen == null
                 || client.player.containerMenu != handler
                 || handler.getCarried().isEmpty()
                 || inventoryInteractionCooldown > 0
@@ -1815,7 +1815,7 @@ public final class MappyWallRuntime {
     private boolean quickMoveSlot(Minecraft client, CartographyTableMenu handler, int slotId) {
         if (client.player == null
                 || client.gameMode == null
-                || client.gui.screen() == null
+                || client.screen == null
                 || client.player.containerMenu != handler
                 || inventoryInteractionCooldown > 0
                 || slotId < 0
@@ -1855,7 +1855,7 @@ public final class MappyWallRuntime {
         if (isFillMapLeased(client.player, mapId)) {
             return true;
         }
-        if (client.gui.screen() != null
+        if (client.screen != null
                 || client.player.containerMenu != client.player.inventoryMenu
                 || inventoryInteractionCooldown > 0) {
             return false;

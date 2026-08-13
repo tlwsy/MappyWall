@@ -423,7 +423,7 @@ class MovementControllerWaterTransitTest {
         assertTrue(compactAcquisition.contains(
                 "boatSurfaceCandidatePhysicallyReachable="));
         assertTrue(compactAcquisition.contains(
-                "boatSurfaceInteractionDeferredByGui=client.gui.screen()!=null;"));
+                "boatSurfaceInteractionDeferredByGui=client.screen!=null;"));
     }
 
     @Test

@@ -36,22 +36,21 @@ public final class WorldTargetRenderer {
             MappyWallRuntime.RenderTarget target
     ) {
         PoseStack matrices = context.poseStack();
-        Vec3 camera = context.levelState().cameraRenderState.pos;
+        VertexConsumer vertices = context.bufferSource().getBuffer(RenderTypes.linesTranslucent());
+        Vec3 camera = context.gameRenderer().getMainCamera().position();
 
         double playerY = client.player.getY();
         double centerX = target.targetX() + 0.5;
         double centerZ = target.targetZ() + 0.5;
 
-        context.submitNodeCollector().submitCustomGeometry(matrices, RenderTypes.linesTranslucent(), (pose, vertices) -> {
-            renderWaypointBeam(pose, vertices, camera, playerY, centerX, centerZ);
-            if (target.showPath()) {
-                renderPath(pose, vertices, camera, client, target);
-            }
-        });
+        renderWaypointBeam(matrices, vertices, camera, playerY, centerX, centerZ);
+        if (target.showPath()) {
+            renderPath(matrices, vertices, camera, client, target);
+        }
     }
 
     private static void renderWaypointBeam(
-            PoseStack.Pose pose,
+            PoseStack matrices,
             VertexConsumer vertices,
             Vec3 camera,
             double playerY,
@@ -71,13 +70,13 @@ public final class WorldTargetRenderer {
         double bottomY = playerY + BEAM_BOTTOM_OFFSET;
         double topY = playerY + BEAM_TOP_OFFSET;
         double centerY = playerY + 8.0;
-        line(pose, vertices, camera, markerX, bottomY, markerZ, markerX, topY, markerZ, 64, 224, 255, 255);
-        line(pose, vertices, camera, markerX - 3.0, centerY, markerZ, markerX + 3.0, centerY, markerZ, 64, 224, 255, 255);
-        line(pose, vertices, camera, markerX, centerY, markerZ - 3.0, markerX, centerY, markerZ + 3.0, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX, bottomY, markerZ, markerX, topY, markerZ, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX - 3.0, centerY, markerZ, markerX + 3.0, centerY, markerZ, 64, 224, 255, 255);
+        line(matrices, vertices, camera, markerX, centerY, markerZ - 3.0, markerX, centerY, markerZ + 3.0, 64, 224, 255, 255);
     }
 
     private static void renderPath(
-            PoseStack.Pose pose,
+            PoseStack matrices,
             VertexConsumer vertices,
             Vec3 camera,
             Minecraft client,
@@ -90,7 +89,7 @@ public final class WorldTargetRenderer {
             double nextX = pos.getX() + 0.5;
             double nextY = pos.getY() + 0.25;
             double nextZ = pos.getZ() + 0.5;
-            line(pose, vertices, camera, previousX, previousY, previousZ, nextX, nextY, nextZ, 255, 216, 72, 255);
+            line(matrices, vertices, camera, previousX, previousY, previousZ, nextX, nextY, nextZ, 255, 216, 72, 255);
             previousX = nextX;
             previousY = nextY;
             previousZ = nextZ;
@@ -98,7 +97,7 @@ public final class WorldTargetRenderer {
     }
 
     private static void line(
-            PoseStack.Pose pose,
+            PoseStack matrices,
             VertexConsumer vertices,
             Vec3 camera,
             double startX,
@@ -123,6 +122,7 @@ public final class WorldTargetRenderer {
         float nx = (float) (normalX / length);
         float ny = (float) (normalY / length);
         float nz = (float) (normalZ / length);
+        PoseStack.Pose pose = matrices.last();
         vertices.addVertex(pose, (float) (startX - camera.x), (float) (startY - camera.y), (float) (startZ - camera.z))
                 .setColor(red, green, blue, alpha)
                 .setLineWidth(2.5F)

@@ -311,7 +311,7 @@ public final class MapOpenController {
     }
 
     private boolean isSafeInventoryContext(Minecraft client, LocalPlayer player) {
-        return client.gui.screen() == null && player.containerMenu == player.inventoryMenu;
+        return client.screen == null && player.containerMenu == player.inventoryMenu;
     }
 
     private int findPlayerInventoryMenuSlot(LocalPlayer player, int inventorySlot) {

@@ -385,7 +385,7 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
 
-        if (client.gui.screen() != null
+        if (client.screen != null
                 && (waypoint.action() == LocalPathPlanner.StepAction.BREAK
                         || waypoint.action() == LocalPathPlanner.StepAction.PLACE)) {
             // Aggressive mode may keep travelling with a screen open, but world and
@@ -1039,7 +1039,7 @@ public final class MovementController {
                 || horizontalSpeed < ELYTRA_LOW_SPEED
                 || climbing;
         if (needsBoost && fireworkCooldown <= 0) {
-            if (client.gui.screen() != null) {
+            if (client.screen != null) {
                 return MovementResult.active(List.of(navigationTarget));
             }
             int slot = findFirework(player);
@@ -1122,7 +1122,7 @@ public final class MovementController {
                 || horizontalSpeed < ELYTRA_LOW_SPEED
                 || climbing;
         if (needsBoost && fireworkCooldown <= 0) {
-            if (client.gui.screen() != null) {
+            if (client.screen != null) {
                 return MovementResult.active(List.of(navigationTarget));
             }
             int slot = findFirework(player);
@@ -1341,7 +1341,7 @@ public final class MovementController {
         Vec3 eye = player.getEyePosition();
         return currentWaterEvidence.surfaces().stream()
                 .map(WaterRouteEvidenceAdapter.ResolvedSurface::waterPos)
-                .filter(pos -> eye.distanceToSqr(Vec3.atCenterOf(pos).add(0.0, 0.25, 0.0))
+                .filter(pos -> eye.distanceToSqr(blockCenter(pos).add(0.0, 0.25, 0.0))
                         <= BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS)
                 .findFirst();
     }
@@ -1383,7 +1383,7 @@ public final class MovementController {
         if (client.level == null || pendingBoatPlacementSurface == null) {
             return OptionalInt.empty();
         }
-        Vec3 center = Vec3.atCenterOf(pendingBoatPlacementSurface);
+        Vec3 center = blockCenter(pendingBoatPlacementSurface);
         AbstractBoat nearest = client.level.getEntitiesOfClass(
                         AbstractBoat.class,
                         new AABB(pendingBoatPlacementSurface).inflate(3.0),
@@ -1431,7 +1431,7 @@ public final class MovementController {
         return isConfirmedPlacementBoatEligible(
                 boat.getId(),
                 boatPlacementBaseline,
-                boat.position().distanceToSqr(Vec3.atCenterOf(pendingBoatPlacementSurface)),
+                boat.position().distanceToSqr(blockCenter(pendingBoatPlacementSurface)),
                 waterTransitPolicy.surfaceY(),
                 placementSurfaceY,
                 boatSurfaceY
@@ -1469,7 +1469,7 @@ public final class MovementController {
                 .findFirst();
         Optional<BlockPos> placementSurface = reachableBoatPlacementSurface(player);
         boolean transactionAvailable = client.gameMode != null
-                && client.gui.screen() == null
+                && client.screen == null
                 && canSwapPlayerInventory(player);
         boolean heldBoat = player.getMainHandItem().getItem() instanceof BoatItem;
         boolean carriedBoat = findBoat(player) >= 0;
@@ -1571,7 +1571,7 @@ public final class MovementController {
             );
             boatSurfaceCandidatePhysicallyReachable = isRouteBoatPhysicallyReachable(
                     client, player, boatSurfaceApproachCandidateId);
-            boatSurfaceInteractionDeferredByGui = client.gui.screen() != null;
+            boatSurfaceInteractionDeferredByGui = client.screen != null;
             return swimTowardBoatSurface(client, player, holdSurface.orElseThrow());
         }
         return swimToward(client, player, waypoint);
@@ -1847,7 +1847,7 @@ public final class MovementController {
         }
         actionAcknowledged = false;
         if (!isBreakableObstacle(client, block)
-                || player.getEyePosition().distanceToSqr(Vec3.atCenterOf(block)) > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS) {
+                || player.getEyePosition().distanceToSqr(blockCenter(block)) > BOAT_PLACE_REACH_BLOCKS * BOAT_PLACE_REACH_BLOCKS) {
             forceLocalReplan();
             stopMovement(client);
             return MovementResult.active(pathSnapshot());
@@ -1862,7 +1862,7 @@ public final class MovementController {
             return MovementResult.active(pathSnapshot());
         }
         if (currentAutomationStyle() == AutomationStyle.AGGRESSIVE) {
-            sendServerLookAt(player, Vec3.atCenterOf(block));
+            sendServerLookAt(player, blockCenter(block));
         } else {
             faceBlock(player, block);
         }
@@ -2042,7 +2042,7 @@ public final class MovementController {
         if (player.getFoodData().getFoodLevel() > config.eatAtFoodLevel()) {
             return false;
         }
-        if (client.gui.screen() != null) {
+        if (client.screen != null) {
             return false;
         }
 
@@ -2078,7 +2078,7 @@ public final class MovementController {
         if (client.gameMode == null) {
             return Optional.of(InteractionResult.FAIL);
         }
-        Vec3 hit = Vec3.atCenterOf(waterPos).add(0.0, 0.25, 0.0);
+        Vec3 hit = blockCenter(waterPos).add(0.0, 0.25, 0.0);
         if (style != AutomationStyle.AGGRESSIVE) {
             float yawError = faceMovement(
                     player, hit.x - player.getX(), hit.z - player.getZ());
@@ -3191,7 +3191,7 @@ public final class MovementController {
     }
 
     private boolean selectOrMoveToHotbar(Minecraft client, LocalPlayer player, int inventorySlot) {
-        if (inventorySlot < 0 || client.gui.screen() != null) {
+        if (inventorySlot < 0 || client.screen != null) {
             return false;
         }
         if (inventorySlot < 9) {
@@ -3216,13 +3216,13 @@ public final class MovementController {
     private BlockHitResult placementHit(Minecraft client, BlockPos placePos) {
         BlockPos below = placePos.below();
         if (isSolid(client, below)) {
-            return new BlockHitResult(Vec3.atCenterOf(below).add(0.0, 0.5, 0.0), Direction.UP, below, false);
+            return new BlockHitResult(blockCenter(below).add(0.0, 0.5, 0.0), Direction.UP, below, false);
         }
         for (Direction direction : Direction.Plane.HORIZONTAL) {
             BlockPos neighbor = placePos.relative(direction);
             if (isSolid(client, neighbor)) {
                 Direction face = direction.getOpposite();
-                Vec3 hit = Vec3.atCenterOf(neighbor).add(
+                Vec3 hit = blockCenter(neighbor).add(
                         face.getStepX() * 0.5,
                         face.getStepY() * 0.5,
                         face.getStepZ() * 0.5
@@ -3334,6 +3334,14 @@ public final class MovementController {
         if (safeVelocity != currentVelocity) {
             player.setDeltaMovement(safeVelocity);
         }
+    }
+
+    static Vec3 blockCenter(BlockPos pos) {
+        return new Vec3(
+                pos.getX() + 0.5,
+                pos.getY() + 0.5,
+                pos.getZ() + 0.5
+        );
     }
 
     static Vec3 planningGapVelocity(AutomationStyle style, Vec3 currentVelocity) {
