@@ -134,9 +134,12 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew compileClientJava \
   --no-daemon --rerun-tasks
 ```
 
-Expected RED evidence: compilation fails on the known 26.2-only screen,
-block-center, or level-render APIs. Preserve the exact compiler diagnostics in
-the Task 1 report.
+Expected RED evidence: compilation identifies any real 26.1 incompatibility in
+the audited screen, block-center, or level-render seams. The observed compiler
+RED was fourteen missing `Gui.screen()` symbols; later signature inspection
+confirmed `setScreenAndShow` is available on all three supported releases and
+must not be replaced. Preserve the exact compiler diagnostics in the Task 1
+report.
 
 - [ ] **Step 3: Move the default dependency and release metadata to 26.1**
 
@@ -159,24 +162,26 @@ Change only the Minecraft dependency in `fabric.mod.json`:
 "minecraft": ">=26.1 <=26.1.2"
 ```
 
-- [ ] **Step 4: Replace the 26.2 screen methods**
+- [ ] **Step 4: Preserve screen transitions and replace the 26.2 screen-state accessor**
 
-Use the 26.1.x `Minecraft.setScreen(Screen)` API without changing the callers or screen lifecycle:
+Retain `Minecraft.setScreenAndShow(Screen)` at the four screen-transition
+sites. Cached official-name 26.1, 26.1.1, and 26.1.2 clients all expose this
+method, and it preserves the existing immediate render after changing screens:
 
 ```java
 public void openConfigScreen(Minecraft client) {
     if (hasUsableWorld(client)) {
         auditCrossProjectMapIds(client, true);
     }
-    client.setScreen(new MapWallTasksScreen(this));
+    client.setScreenAndShow(new MapWallTasksScreen(this));
 }
 
 public void openNewProjectScreen(Minecraft client) {
-    client.setScreen(new MapWallConfigScreen(this));
+    client.setScreenAndShow(new MapWallConfigScreen(this));
 }
 
 public void openNavigationSettingsScreen(Minecraft client, Screen parent) {
-    client.setScreen(new NavigationSettingsScreen(this, parent));
+    client.setScreenAndShow(new NavigationSettingsScreen(this, parent));
 }
 ```
 
@@ -185,7 +190,7 @@ Use the same API when closing navigation settings:
 ```java
 @Override
 public void onClose() {
-    Minecraft.getInstance().setScreen(parent);
+    Minecraft.getInstance().setScreenAndShow(parent);
 }
 ```
 
@@ -468,13 +473,15 @@ implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 implementation "net.fabricmc.fabric-api:fabric-api:${minecraftCoordinates.fabricApiVersion}"
 ```
 
-Replace `printFabricStatus`'s first output line with:
+Replace `printFabricStatus` output with:
 
 ```groovy
 println("Fabric build target: ${minecraftTarget}; Minecraft "
         + "${minecraftCoordinates.minecraftVersion}, official mappings, Loader "
         + "${project.loader_version}, Fabric API "
         + "${minecraftCoordinates.fabricApiVersion}.")
+println("Use -PenableFabric=false compileJava only as a limited pure-source "
+        + "diagnostic; test is not supported without Fabric/client mappings.")
 ```
 
 Replace the dependency properties in `gradle.properties` with only the stable selector:
@@ -566,7 +573,18 @@ if (fabricEnabled) {
     tasks.register("verifyReleaseJar") {
         group = "verification"
         description = "Verifies the shared Minecraft 26.1.x release JAR."
-        dependsOn tasks.named("jar")
+        if (minecraftTarget == "26.1") {
+            dependsOn tasks.named("jar")
+        }
+
+        doFirst {
+            if (minecraftTarget != "26.1") {
+                throw new GradleException(
+                        "The shared release JAR must be built with minecraft_target=26.1, "
+                                + "not ${minecraftTarget}."
+                )
+            }
+        }
 
         doLast {
             File jarFile = tasks.named("jar").get().archiveFile.get().asFile
@@ -618,11 +636,32 @@ if (fabricEnabled) {
                                     + "${metadata.entrypoints.keySet()}."
                     )
                 }
+                def clientEntrypoints = metadata.entrypoints.client
+                if (!(clientEntrypoints instanceof Collection)
+                        || clientEntrypoints.size() != 1
+                        || clientEntrypoints[0] != "dev.mappywall.client.MappyWallClient") {
+                    throw new GradleException(
+                            "Unexpected client entrypoints ${clientEntrypoints}."
+                    )
+                }
                 if (metadata.mixins.size() != 1
                         || metadata.mixins[0].config != "mappywall.client.mixins.json"
                         || metadata.mixins[0].environment != "client") {
                     throw new GradleException(
                             "Unexpected client Mixin metadata ${metadata.mixins}."
+                    )
+                }
+                def mixinConfigEntry = archive.getEntry("mappywall.client.mixins.json")
+                def mixinConfig = new groovy.json.JsonSlurper().parse(
+                        archive.getInputStream(mixinConfigEntry)
+                )
+                def clientMixins = mixinConfig.client
+                if (mixinConfig["package"] != "dev.mappywall.client.mixin"
+                        || !(clientMixins instanceof Collection)
+                        || clientMixins.size() != 1
+                        || clientMixins[0] != "MultiPlayerGameModeMixin") {
+                    throw new GradleException(
+                            "Unexpected client Mixin config ${mixinConfig}."
                     )
                 }
                 if (metadata.depends.minecraft != ">=26.1 <=26.1.2") {
@@ -661,16 +700,23 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew verifyReleaseJar \
 Expected RED evidence: the command incorrectly succeeds, proving the task can
 currently bless bytecode compiled against a diagnostic target.
 
-- [ ] **Step 5: Reject diagnostic targets as release sources**
+- [ ] **Step 5: Reject diagnostic targets before they can overwrite the release candidate**
 
-Add this guard as the first statement inside `doLast`:
+Register the `jar` dependency only for target `26.1`, and put this guard in a
+`doFirst` action as shown in Step 2:
 
 ```groovy
-if (minecraftTarget != "26.1") {
-    throw new GradleException(
-            "The shared release JAR must be built with minecraft_target=26.1, "
-                    + "not ${minecraftTarget}."
-    )
+if (minecraftTarget == "26.1") {
+    dependsOn tasks.named("jar")
+}
+
+doFirst {
+    if (minecraftTarget != "26.1") {
+        throw new GradleException(
+                "The shared release JAR must be built with minecraft_target=26.1, "
+                        + "not ${minecraftTarget}."
+        )
+    }
 }
 ```
 
@@ -682,6 +728,11 @@ GRADLE_USER_HOME="$PWD/.gradle-user-home" bash ./gradlew verifyReleaseJar \
 ```
 
 Expected: FAIL with `The shared release JAR must be built with minecraft_target=26.1, not 26.1.1.`
+
+Before and after that diagnostic invocation, record the SHA-256 and mtime of
+the already verified 26.1 candidate. Both must remain unchanged, proving the
+rejected diagnostic target did not execute `jar` or overwrite the release
+path. Repeat the rejection check for 26.1.2.
 
 Re-run the 26.1 verification command from Step 3 and expect PASS.
 

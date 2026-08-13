@@ -58,12 +58,15 @@ test exposes an actual migration defect. Persistence formats, project saves,
 navigation policies, movement constants, and user-facing automation toggles
 must retain their current behavior.
 
-The client integration must replace APIs introduced by the 26.2 migration
-with 26.1.x-compatible equivalents. Git history identifies three known seams:
+The client integration must audit APIs changed by the 26.2 migration and use
+behavior-preserving code shared by all three 26.1.x targets. Git history
+identifies three known seams:
 
-- screen transitions currently use the 26.2 `setScreenAndShow` method;
-- block-center calculations currently use the 26.2 `Vec3.atCenterOf` helper;
-- world path rendering currently uses the 26.2 node-collector render path.
+- screen transitions use `setScreenAndShow`, which is available on all three
+  supported targets and must be retained to preserve its immediate render;
+- block-center calculations can use version-neutral coordinate math with an
+  exact negative-coordinate behavior contract;
+- world path rendering uses the historical 26.1.x direct-buffer render path.
 
 Prefer direct 26.1.x public APIs or version-neutral calculations. Do not add
 reflection, runtime bytecode probing, optional class loading, or conditional
