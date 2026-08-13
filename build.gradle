@@ -103,6 +103,88 @@ tasks.register("printFabricStatus") {
     }
 }
 
+if (fabricEnabled) {
+    tasks.register("verifyReleaseJar") {
+        group = "verification"
+        description = "Verifies the shared Minecraft 26.1.x release JAR."
+        dependsOn tasks.named("jar")
+
+        doLast {
+            if (minecraftTarget != "26.1") {
+                throw new GradleException(
+                        "The shared release JAR must be built with minecraft_target=26.1, "
+                                + "not ${minecraftTarget}."
+                )
+            }
+
+            File jarFile = tasks.named("jar").get().archiveFile.get().asFile
+            String expectedName = "mappywall-0.1.33+mc26.1-26.1.2.jar"
+            if (jarFile.name != expectedName) {
+                throw new GradleException(
+                        "Expected release JAR ${expectedName}, found ${jarFile.name}."
+                )
+            }
+
+            java.util.zip.ZipFile archive = new java.util.zip.ZipFile(jarFile)
+            try {
+                Set<String> entries = java.util.Collections.list(archive.entries())
+                        .collect { it.name }
+                        .toSet()
+                Set<String> required = [
+                        "fabric.mod.json",
+                        "mappywall.client.mixins.json",
+                        "dev/mappywall/core/WaterTransitPolicy.class",
+                        "dev/mappywall/client/MappyWallClient.class",
+                        "dev/mappywall/client/mixin/MultiPlayerGameModeMixin.class"
+                ] as Set
+                Set<String> missing = required - entries
+                if (!missing.isEmpty()) {
+                    throw new GradleException("Missing release JAR entries: ${missing.sort()}.")
+                }
+                if (entries.any { it.startsWith("net/fabricmc/fabric/api/") }) {
+                    throw new GradleException("Fabric API classes must not be bundled.")
+                }
+                if (entries.any {
+                    it.startsWith("META-INF/jars/") && it.contains("fabric-api")
+                }) {
+                    throw new GradleException("Fabric API JARs must not be nested.")
+                }
+
+                def metadataEntry = archive.getEntry("fabric.mod.json")
+                def metadata = new groovy.json.JsonSlurper().parse(
+                        archive.getInputStream(metadataEntry)
+                )
+                if (metadata.version != "0.1.33+mc26.1-26.1.2") {
+                    throw new GradleException("Unexpected mod version ${metadata.version}.")
+                }
+                if (metadata.environment != "client") {
+                    throw new GradleException("Release metadata is not client-only.")
+                }
+                if ((metadata.entrypoints.keySet() as Set) != (["client"] as Set)) {
+                    throw new GradleException(
+                            "Release metadata has non-client entrypoints: "
+                                    + "${metadata.entrypoints.keySet()}."
+                    )
+                }
+                if (metadata.mixins.size() != 1
+                        || metadata.mixins[0].config != "mappywall.client.mixins.json"
+                        || metadata.mixins[0].environment != "client") {
+                    throw new GradleException(
+                            "Unexpected client Mixin metadata ${metadata.mixins}."
+                    )
+                }
+                if (metadata.depends.minecraft != ">=26.1 <=26.1.2") {
+                    throw new GradleException(
+                            "Unexpected Minecraft range ${metadata.depends.minecraft}."
+                    )
+                }
+            } finally {
+                archive.close()
+            }
+        }
+    }
+}
+
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
     options.release = project.java_version as int
