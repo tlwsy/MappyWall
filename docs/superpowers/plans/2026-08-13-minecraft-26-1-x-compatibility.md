@@ -4,7 +4,7 @@
 
 **Goal:** Build one MappyWall `0.1.33+mc26.1-26.1.2` release candidate JAR against Minecraft 26.1 while proving the same source builds against 26.1, 26.1.1, and 26.1.2.
 
-**Architecture:** Keep one production source tree and replace the known 26.2-only client seams with direct 26.1.x APIs or version-neutral coordinate math. Gradle owns an immutable target-to-dependency map selected by `minecraft_target`; the default and release artifact use the oldest target, while later targets are diagnostics. A Gradle verification task inspects the distributable JAR, and the user's real-client smoke tests make the final single-JAR decision.
+**Architecture:** Keep one production source tree, audit client seams changed during the 26.2 migration, and use behavior-preserving APIs or version-neutral coordinate math shared by 26.1.x. Gradle owns an immutable target-to-dependency map selected by `minecraft_target`; the default and release artifact use the oldest target, while later targets are diagnostics. A Gradle verification task inspects the distributable JAR, and the user's real-client smoke tests make the final single-JAR decision.
 
 **Tech Stack:** Java 25, Gradle 9.6.0 wrapper, Fabric Loom 1.17.13, Fabric Loader 0.19.3, Fabric API, official unobfuscated Minecraft 26.1.x names, JUnit 5.14, Gson 2.13.2.
 
